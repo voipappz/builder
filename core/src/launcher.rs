@@ -3,7 +3,7 @@
 //! app uses this; the CLI shares the API check.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -11,7 +11,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tracing::{info, warn};
 
-use crate::builder::{self, BuilderConfig};
+use crate::builder::{self, ApiMcp, BuilderConfig};
 use crate::command::{create_shell_command, spawn_command, ChildProcess};
 
 pub const DEFAULT_AGENT_COMMAND: &str = "npx -y @agentclientprotocol/claude-agent-acp@0.94.0";
@@ -115,9 +115,10 @@ async fn answers(url: &str) -> bool {
     client.get(url).send().await.is_ok()
 }
 
-/// The `/api/mcp` server entry for ACP, after checking the API answers and
-/// accepts the login. The error says why the tools are off.
-pub async fn api_mcp_server(api_url: &str, basic: Option<&str>) -> Result<Value, String> {
+/// The API's MCP server, after checking the API answers and accepts the
+/// login. Builder offers it to the agent read-only. The error says why the
+/// tools are off.
+pub async fn api_mcp_server(api_url: &str, basic: Option<&str>) -> Result<ApiMcp, String> {
     let api_url = api_url.trim_end_matches('/');
     let basic = match basic {
         Some(b) if !b.is_empty() => b,
@@ -142,12 +143,10 @@ pub async fn api_mcp_server(api_url: &str, basic: Option<&str>) -> Result<Value,
         Ok(r) => return Err(format!("{}/api/mcp answered {} for the VA_MCP_BASIC login", api_url, r.status())),
         Err(_) => return Err(format!("{}/api/mcp does not answer", api_url)),
     }
-    Ok(json!({
-        "type": "http",
-        "name": "voipappz",
-        "url": format!("{}/api/mcp", api_url),
-        "headers": [{"name": "Authorization", "value": format!("Basic {}", basic)}]
-    }))
+    Ok(ApiMcp {
+        url: format!("{}/api/mcp", api_url),
+        basic: basic.to_string(),
+    })
 }
 
 /// A running Builder. Dropping it stops the dev server it started.
@@ -359,14 +358,15 @@ pub async fn start(settings: &Settings, progress: impl Fn(&str)) -> Result<Runni
         }
     }
 
-    let mut mcp_servers = Vec::new();
+    let mut api_mcp = None;
     let api_note = match &api_url {
         None => "API tools off (no api_url or api_dir in settings)".to_string(),
         Some(api_url) if !valid_origin(api_url) => format!("API tools off: invalid api_url {}", api_url),
         Some(api_url) => match api_mcp_server(api_url, api_login(settings, &env).await.as_deref()).await {
-            Ok(server) => {
-                mcp_servers.push(server);
-                format!("API tools: {}/api/mcp", api_url.trim_end_matches('/'))
+            Ok(api) => {
+                let note = format!("API tools (read-only): {}", api.url);
+                api_mcp = Some(api);
+                note
             }
             Err(why) => format!("API tools off: {}", why),
         },
@@ -379,7 +379,8 @@ pub async fn start(settings: &Settings, progress: impl Fn(&str)) -> Result<Runni
         client_url,
         agent_command: settings.agent_command.clone(),
         agent_env: env.into_iter().filter(|(k, _)| k != "VA_MCP_BASIC").collect(),
-        mcp_servers,
+        mcp_servers: Vec::new(),
+        api_mcp,
         api_url,
         preview_url,
     };

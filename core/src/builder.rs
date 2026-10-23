@@ -15,18 +15,21 @@
 //! are not mounted.
 
 use axum::{
-    body::Body,
-    extract::Request,
+    body::{Body, Bytes},
+    extract::{Request, State},
     http::{header, HeaderValue, Response, StatusCode},
     middleware::{self, Next},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -35,6 +38,151 @@ use crate::ws::mcp::McpChannelState;
 use crate::ws::WsState;
 
 pub const SECRET_HEADER: &str = "x-builder-secret";
+const API_MCP_PATH: &str = "/mcp/api";
+
+/// The VoipAppz API's MCP server, reached only through Builder. The agent
+/// writes code only in the app, so the API is read-only: tools that change
+/// the platform are hidden and refused, and the login stays in Builder.
+#[derive(Debug, Clone)]
+pub struct ApiMcp {
+    /// Full address, e.g. `http://127.0.0.1:5055/api/mcp`.
+    pub url: String,
+    /// Basic credential (base64 of `email:password`).
+    pub basic: String,
+}
+
+const WRITE_VERBS: &[&str] = &[
+    "create", "update", "delete", "destroy", "remove", "add", "set", "buy", "send",
+    "start", "stop", "cancel", "transfer", "hangup", "enable", "disable", "provision",
+];
+
+/// Whether an MCP tool changes the platform: marked destructive, or named
+/// for a change (`calls.create`, `numbers.buy`).
+pub fn tool_writes(tool: &Value) -> bool {
+    let destructive = tool
+        .pointer("/annotations/destructiveHint")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
+    destructive || name_writes(name)
+}
+
+fn name_writes(name: &str) -> bool {
+    name.rsplit(['.', '_', '/'])
+        .next()
+        .is_some_and(|verb| WRITE_VERBS.iter().any(|w| verb.eq_ignore_ascii_case(w)))
+}
+
+struct ApiProxy {
+    api: ApiMcp,
+    client: reqwest::Client,
+    /// Write tools seen in the API's tools/list.
+    blocked: Mutex<Option<HashSet<String>>>,
+}
+
+impl ApiProxy {
+    async fn forward(&self, body: Bytes) -> Result<(StatusCode, Bytes), String> {
+        let response = self
+            .client
+            .post(&self.api.url)
+            .header(header::AUTHORIZATION, format!("Basic {}", self.api.basic))
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, "application/json, text/event-stream")
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| format!("API unreachable: {}", e))?;
+        let status = StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+        Ok((status, bytes))
+    }
+
+    async fn learn(&self, tools: &[Value]) {
+        let names = tools
+            .iter()
+            .filter(|t| tool_writes(t))
+            .filter_map(|t| t.get("name").and_then(Value::as_str).map(str::to_string))
+            .collect();
+        *self.blocked.lock().await = Some(names);
+    }
+
+    async fn is_write(&self, name: &str) -> bool {
+        if name_writes(name) {
+            return true;
+        }
+        if self.blocked.lock().await.is_none() {
+            let list = serde_json::json!({"jsonrpc": "2.0", "id": "builder-tools", "method": "tools/list"});
+            if let Ok((_, bytes)) = self.forward(Bytes::from(list.to_string())).await {
+                let tools = serde_json::from_slice::<Value>(&bytes)
+                    .ok()
+                    .and_then(|v| v.pointer("/result/tools").and_then(Value::as_array).cloned())
+                    .unwrap_or_default();
+                self.learn(&tools).await;
+            }
+        }
+        self.blocked
+            .lock()
+            .await
+            .as_ref()
+            .map_or(true, |blocked| blocked.contains(name))
+    }
+}
+
+fn json_response(status: StatusCode, body: impl Into<Body>) -> Response<Body> {
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(body.into())
+        .expect("static response")
+}
+
+async fn api_mcp_proxy(State(proxy): State<Arc<ApiProxy>>, body: Bytes) -> Response<Body> {
+    let message: Value = match serde_json::from_slice(&body) {
+        Ok(Value::Object(map)) => Value::Object(map),
+        _ => return json_response(StatusCode::BAD_REQUEST, r#"{"error":"one JSON-RPC message per request"}"#),
+    };
+    let id = message.get("id").cloned().unwrap_or(Value::Null);
+    let method = message.get("method").and_then(Value::as_str).unwrap_or("").to_string();
+
+    if method == "tools/call" {
+        let name = message.pointer("/params/name").and_then(Value::as_str).unwrap_or("");
+        if proxy.is_write(name).await {
+            let refusal = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "isError": true,
+                    "content": [{
+                        "type": "text",
+                        "text": format!("{} changes the VoipAppz platform. In Builder the API is read-only: change the app's code instead.", name)
+                    }]
+                }
+            });
+            return json_response(StatusCode::OK, refusal.to_string());
+        }
+    }
+
+    let (status, bytes) = match proxy.forward(body).await {
+        Ok(r) => r,
+        Err(e) => {
+            let error = serde_json::json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": e}});
+            return json_response(StatusCode::BAD_GATEWAY, error.to_string());
+        }
+    };
+    if method == "tools/list" && status.is_success() {
+        if let Ok(mut reply) = serde_json::from_slice::<Value>(&bytes) {
+            if let Some(tools) = reply.pointer_mut("/result/tools").and_then(Value::as_array_mut) {
+                proxy.learn(tools).await;
+                tools.retain(|t| !tool_writes(t));
+            }
+            return json_response(status, reply.to_string());
+        }
+    }
+    if bytes.is_empty() {
+        return Response::builder().status(status).body(Body::empty()).expect("static response");
+    }
+    json_response(status, bytes)
+}
 
 #[derive(Debug, Clone)]
 pub struct BuilderConfig {
@@ -48,6 +196,8 @@ pub struct BuilderConfig {
     pub agent_env: HashMap<String, String>,
     /// MCP servers handed to the agent on every session (ACP `mcpServers`).
     pub mcp_servers: Vec<Value>,
+    /// The VoipAppz API's MCP server, offered read-only through Builder.
+    pub api_mcp: Option<ApiMcp>,
     /// Shown to the user; never includes credentials.
     pub api_url: Option<String>,
     pub preview_url: String,
@@ -126,11 +276,20 @@ pub fn router(config: BuilderConfig) -> Router {
 }
 
 fn router_with_state(config: BuilderConfig) -> (Router, WsState) {
+    let mut mcp_servers = config.mcp_servers.clone();
+    if config.api_mcp.is_some() {
+        mcp_servers.push(serde_json::json!({
+            "type": "http",
+            "name": "voipappz",
+            "url": format!("http://127.0.0.1:{}{}", config.port, API_MCP_PATH),
+            "headers": [{"name": SECRET_HEADER, "value": config.secret}]
+        }));
+    }
     let policy = AgentPolicy {
         command: config.agent_command.clone(),
         env: config.agent_env.clone(),
         cwd: config.workspace.to_string_lossy().into_owned(),
-        mcp_servers: config.mcp_servers.clone(),
+        mcp_servers,
     };
     let ws_state = WsState::new()
         .with_acp_state(AcpChannelState::new().with_policy(policy))
@@ -142,6 +301,21 @@ fn router_with_state(config: BuilderConfig) -> (Router, WsState) {
         .route("/socket/websocket", get(crate::ws::ws_handler))
         .with_state(ws_state.clone());
 
+    let mut api_routes = Router::new();
+    if let Some(api) = config.api_mcp.clone() {
+        let proxy = Arc::new(ApiProxy {
+            api,
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .expect("http client"),
+            blocked: Mutex::new(None),
+        });
+        api_routes = Router::new()
+            .route(API_MCP_PATH, post(api_mcp_proxy))
+            .with_state(proxy);
+    }
+
     let router = Router::new()
         .route(
             "/",
@@ -151,6 +325,7 @@ fn router_with_state(config: BuilderConfig) -> (Router, WsState) {
             }),
         )
         .merge(ws_routes)
+        .merge(api_routes)
         .layer(middleware::from_fn(move |req: Request, next: Next| {
             let config = config.clone();
             async move { guard(&config, req, next).await }
@@ -269,7 +444,7 @@ fn stub_page(config: &BuilderConfig) -> Response<Body> {
             .unwrap_or_default(),
         client_url: client.clone(),
         api_url: config.api_url.as_deref(),
-        api_mcp: !config.mcp_servers.is_empty(),
+        api_mcp: config.api_mcp.is_some(),
         agent: "Claude Code",
         previews: Previews {
             admin: admin.clone(),
@@ -389,6 +564,7 @@ mod tests {
             agent_command: "true".to_string(),
             agent_env: HashMap::new(),
             mcp_servers: vec![],
+            api_mcp: None,
             api_url: None,
             preview_url: "http://localhost:3000".to_string(),
         }
@@ -464,6 +640,132 @@ mod tests {
         let res = stub_page(&c);
         let csp = res.headers().get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap();
         assert!(csp.contains("https://switch.voipappz.io"));
+    }
+
+    #[test]
+    fn write_tools_are_recognised() {
+        use serde_json::json;
+        assert!(tool_writes(&json!({"name": "calls.create"})));
+        assert!(tool_writes(&json!({"name": "numbers.buy"})));
+        assert!(tool_writes(&json!({"name": "nodes.inspect", "annotations": {"destructiveHint": true}})));
+        assert!(!tool_writes(&json!({"name": "calls.history"})));
+        assert!(!tool_writes(&json!({"name": "devices.list"})));
+        assert!(!tool_writes(&json!({"name": "logs.search", "annotations": {"readOnlyHint": true}})));
+    }
+
+    #[test]
+    fn agent_may_write_only_in_the_workspace() {
+        use serde_json::json;
+        let root = std::env::temp_dir().join(format!("builder-ws-{}", std::process::id()));
+        let outside = std::env::temp_dir().join(format!("builder-out-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        let policy = AgentPolicy {
+            command: "agent".into(),
+            env: HashMap::new(),
+            cwd: root.to_string_lossy().into_owned(),
+            mcp_servers: vec![],
+        };
+        let ask = |kind: &str, path: &str| {
+            json!({
+                "sessionId": "s",
+                "toolCall": {"toolCallId": "t", "kind": kind, "locations": [{"path": path}]},
+                "options": [
+                    {"optionId": "allow", "name": "Allow", "kind": "allow_once"},
+                    {"optionId": "no", "name": "Reject", "kind": "reject_once"}
+                ]
+            })
+        };
+        let inside = root.join("src/App.jsx").to_string_lossy().into_owned();
+        assert_eq!(policy.refuse_permission(&ask("edit", &inside)), None);
+        assert_eq!(policy.refuse_permission(&ask("edit", "src/new-file.jsx")), None);
+
+        let refused = json!({"outcome": {"outcome": "selected", "optionId": "no"}});
+        let api = outside.join("lib/x.rb").to_string_lossy().into_owned();
+        assert_eq!(policy.refuse_permission(&ask("edit", &api)), Some(refused.clone()));
+        assert_eq!(policy.refuse_permission(&ask("delete", "../voipappz-api/Gemfile")), Some(refused.clone()));
+        assert_eq!(policy.refuse_permission(&ask("edit", "src/../../escape.js")), Some(refused.clone()));
+        assert_eq!(policy.refuse_permission(&ask("edit", ".git/hooks/pre-commit")), Some(refused.clone()));
+        #[cfg(unix)]
+        assert_eq!(policy.refuse_permission(&ask("edit", "link/x.js")), Some(refused.clone()));
+        // A write with no named target is refused; reads and commands go to the user.
+        let unnamed = json!({"toolCall": {"kind": "edit"}, "options": []});
+        assert_eq!(policy.refuse_permission(&unnamed), Some(json!({"outcome": {"outcome": "cancelled"}})));
+        assert_eq!(policy.refuse_permission(&ask("read", &api)), None);
+        assert_eq!(policy.refuse_permission(&ask("execute", &api)), None);
+
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[tokio::test]
+    async fn api_tools_are_read_only_through_builder() {
+        use axum::extract::State as AxState;
+        use serde_json::json;
+        // A fake VoipAppz API that records what reaches it.
+        let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        async fn fake(AxState(calls): AxState<Arc<Mutex<Vec<(String, String)>>>>, req: Request) -> Response<Body> {
+            let auth = req.headers().get(header::AUTHORIZATION).and_then(|h| h.to_str().ok()).unwrap_or("").to_string();
+            let body = axum::body::to_bytes(req.into_body(), usize::MAX).await.unwrap();
+            let msg: Value = serde_json::from_slice(&body).unwrap();
+            let method = msg["method"].as_str().unwrap_or("").to_string();
+            calls.lock().await.push((method.clone(), auth));
+            let result = match method.as_str() {
+                "tools/list" => json!({"tools": [
+                    {"name": "calls.history"},
+                    {"name": "calls.create", "annotations": {"destructiveHint": true}},
+                    {"name": "nodes.reboot", "annotations": {"destructiveHint": true}}
+                ]}),
+                _ => json!({"content": [{"type": "text", "text": "ok"}]}),
+            };
+            json_response(StatusCode::OK, json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}).to_string())
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = Router::new().route("/api/mcp", post(fake)).with_state(calls.clone());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let mut c = config();
+        c.api_mcp = Some(ApiMcp { url: format!("http://127.0.0.1:{}/api/mcp", port), basic: "dXNlcjpwdw==".into() });
+        let router = router(c);
+        let call = |body: Value, secret: bool| {
+            let router = router.clone();
+            async move {
+                let mut req = Request::builder()
+                    .method("POST")
+                    .uri("/mcp/api")
+                    .header("host", "127.0.0.1:9832")
+                    .header("content-type", "application/json");
+                if secret {
+                    req = req.header(SECRET_HEADER, "s3cret");
+                }
+                let res = router.oneshot(req.body(Body::from(body.to_string())).unwrap()).await.unwrap();
+                let status = res.status();
+                let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+                (status, serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null))
+            }
+        };
+
+        let (status, _) = call(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}), false).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let (_, listed) = call(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}), true).await;
+        let names: Vec<_> = listed["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
+        assert_eq!(names, vec!["calls.history"]);
+
+        let (_, refused) = call(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "nodes.reboot"}}), true).await;
+        assert_eq!(refused["result"]["isError"], true);
+        let (_, refused) = call(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "calls.create"}}), true).await;
+        assert_eq!(refused["result"]["isError"], true);
+
+        let (_, read) = call(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "calls.history"}}), true).await;
+        assert_eq!(read["result"]["content"][0]["text"], "ok");
+
+        let seen = calls.lock().await.clone();
+        assert!(seen.iter().all(|(_, auth)| auth == "Basic dXNlcjpwdw=="));
+        assert_eq!(seen.iter().filter(|(m, _)| m == "tools/call").count(), 1, "write calls never reach the API");
     }
 
     #[test]

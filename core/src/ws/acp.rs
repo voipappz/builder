@@ -216,6 +216,59 @@ impl AgentPolicy {
         }
     }
 
+    /// The answer to a `session/request_permission` that would change a file
+    /// outside the workspace (or inside its `.git`): the agent may write only
+    /// in the workspace. `None` means the request goes to the user as usual.
+    pub fn refuse_permission(&self, params: &Value) -> Option<Value> {
+        let tool = params.get("toolCall")?;
+        let kind = tool.get("kind").and_then(Value::as_str).unwrap_or("");
+        let has_diff = tool
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|c| c.iter().any(|i| i.get("type").and_then(Value::as_str) == Some("diff")));
+        if !matches!(kind, "edit" | "delete" | "move") && !has_diff {
+            return None;
+        }
+        let mut paths: Vec<String> = Vec::new();
+        if let Some(locations) = tool.get("locations").and_then(Value::as_array) {
+            paths.extend(locations.iter().filter_map(|l| l.get("path")?.as_str().map(str::to_string)));
+        }
+        if let Some(content) = tool.get("content").and_then(Value::as_array) {
+            paths.extend(content.iter().filter_map(|c| c.get("path")?.as_str().map(str::to_string)));
+        }
+        if let Some(input) = tool.get("rawInput") {
+            for key in ["file_path", "path", "notebook_path", "new_path", "destination"] {
+                if let Some(p) = input.get(key).and_then(Value::as_str) {
+                    paths.push(p.to_string());
+                }
+            }
+        }
+        let root = std::path::Path::new(&self.cwd);
+        // A write whose target cannot be named is refused too.
+        let allowed = !paths.is_empty() && paths.iter().all(|p| writable_in(root, p));
+        if allowed {
+            return None;
+        }
+        let reject = params
+            .get("options")
+            .and_then(Value::as_array)
+            .and_then(|options| {
+                options
+                    .iter()
+                    .find(|o| o.get("kind").and_then(Value::as_str) == Some("reject_once"))
+                    .or_else(|| {
+                        options.iter().find(|o| {
+                            o.get("kind").and_then(Value::as_str).is_some_and(|k| k.starts_with("reject"))
+                        })
+                    })
+            })
+            .and_then(|o| o.get("optionId").cloned());
+        Some(match reject {
+            Some(option_id) => json!({ "outcome": { "outcome": "selected", "optionId": option_id } }),
+            None => json!({ "outcome": { "outcome": "cancelled" } }),
+        })
+    }
+
     /// Pin `cwd` and `mcpServers` on the session requests that carry them.
     pub fn apply(&self, request: &JsonRpcRequest) -> JsonRpcRequest {
         let mut request = request.clone();
@@ -234,6 +287,42 @@ impl AgentPolicy {
         }
         request
     }
+}
+
+/// Whether `path` (absolute, or relative to `root`) lies inside `root` and
+/// outside its `.git`, after resolving `..` and any symlinked parent.
+pub fn writable_in(root: &std::path::Path, path: &str) -> bool {
+    use std::path::{Component, PathBuf};
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let raw = std::path::Path::new(path);
+    let joined = if raw.is_absolute() { raw.to_path_buf() } else { root.join(raw) };
+    let mut lexical = PathBuf::new();
+    for part in joined.components() {
+        match part {
+            Component::ParentDir => {
+                lexical.pop();
+            }
+            Component::CurDir => {}
+            other => lexical.push(other),
+        }
+    }
+    // Resolve symlinks in the longest part that exists, keep the rest as is.
+    let mut existing = lexical.clone();
+    let mut rest = Vec::new();
+    while !existing.exists() {
+        match existing.file_name() {
+            Some(name) => rest.push(name.to_os_string()),
+            None => break,
+        }
+        if !existing.pop() {
+            break;
+        }
+    }
+    let mut resolved = std::fs::canonicalize(&existing).unwrap_or(existing);
+    for name in rest.into_iter().rev() {
+        resolved.push(name);
+    }
+    resolved.starts_with(&root) && !resolved.starts_with(root.join(".git"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2073,6 +2162,21 @@ async fn handle_process_message(
     message: JsonRpcMessage,
 ) -> Result<()> {
     debug!("Got process message {:?}", message);
+    if let (Some(policy), JsonRpcMessage::Request(request)) = (&state.policy, &message) {
+        if request.method == "session/request_permission" {
+            if let Some(result) = request.params.as_ref().and_then(|p| policy.refuse_permission(p)) {
+                info!("Refused a write outside the workspace");
+                return process_state
+                    .send_to_process(JsonRpcMessage::Response(JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id.clone(),
+                        result: Some(result),
+                        error: None,
+                    }))
+                    .await;
+            }
+        }
+    }
     match &message {
         JsonRpcMessage::Response(response) => {
             handle_process_response(process_state, state, response).await
