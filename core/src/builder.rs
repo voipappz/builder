@@ -475,6 +475,8 @@ fn stub_page(config: &BuilderConfig) -> Response<Body> {
         (String::new(), format!("{client}/builder/client.js"))
     };
 
+    let brand_icon = include_str!("../../branding/icon.svg");
+    let favicon = brand_icon.bytes().map(|byte| format!("%{byte:02X}")).collect::<String>();
     let html = format!(
         r##"<!DOCTYPE html>
 <html>
@@ -483,6 +485,18 @@ fn stub_page(config: &BuilderConfig) -> Response<Body> {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="voipappz-builder:info" content="{info}" />
     <title>VoipAppz Builder</title>
+    <meta name="theme-color" content="#FDAE98" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,{favicon}" />
+    <style>
+      body:has(.builder-startup) {{ margin: 0; background: #FFF8EC; color: #000; }}
+      .builder-startup {{ box-sizing: border-box; min-height: 100vh; display: grid; place-items: center; padding: 24px; font-family: system-ui, sans-serif; }}
+      .builder-startup article {{ box-sizing: border-box; width: min(100%, 540px); padding: clamp(24px, 5vw, 48px); background: #FDAE98; border: 2.5px solid #000; border-radius: 24px; box-shadow: 6px 6px 0 #000; }}
+      .builder-startup svg {{ width: 80px; height: 80px; }}
+      .builder-startup .brand {{ display: inline-block; background: #FFF56E; padding: 8px 20px; border: 2px solid #000; border-radius: 50%; font-weight: 800; }}
+      .builder-startup h1 {{ font-size: clamp(28px, 5vw, 40px); line-height: 1.1; letter-spacing: -0.04em; }}
+      .builder-startup p {{ line-height: 1.6; overflow-wrap: anywhere; }}
+      .builder-startup code {{ font-size: 0.9em; }}
+    </style>
     {preamble}
     <script nonce="{nonce}">
       (function () {{
@@ -492,19 +506,26 @@ fn stub_page(config: &BuilderConfig) -> Response<Body> {
         script.nonce = "{nonce}";
         script.src = src;
         script.onerror = function () {{
-          document.getElementById("root").innerHTML =
-            '<div style="font-family:sans-serif;padding:2rem">' +
-            "<h2>VoipAppz Builder could not load the chat</h2>" +
-            "<p>Tried: <code></code></p>" +
-            "<p>Start the app (npm run dev in the app checkout) or set --client-url.</p></div>";
-          document.querySelector("#root code").textContent = src;
+          var startup = document.querySelector(".builder-startup");
+          if (!startup) return;
+          startup.setAttribute("role", "alert");
+          startup.querySelector("h1").textContent = "We couldn’t open the chat";
+          startup.querySelector(".message").textContent = "Restart Builder and try again. If this continues, open Logs from the Builder menu.";
+          startup.querySelector(".details").hidden = false;
+          startup.querySelector("code").textContent = src;
         }};
         document.head.appendChild(script);
       }})();
     </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><main class="builder-startup" role="status"><article>
+      {brand_icon}
+      <p><span class="brand">VoipAppz Builder</span></p>
+      <h1>Your next idea starts here.</h1>
+      <p class="message">Opening your workspace. Build your voice app through chat and see it take shape.</p>
+      <p class="details" hidden>Could not load <code></code></p>
+    </article></main></div>
   </body>
 </html>
 "##,
