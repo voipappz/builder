@@ -39,6 +39,15 @@ without asking (its "Accept edits" mode) and asks before running commands.
 
 Claude Code must be signed in (`claude`) on this machine.
 
+Builder checks Node and npm at startup. If either is missing, or Node is too
+old, it uses mise to install the Node version in the app's
+`mise.toml` (22 by default). The resulting PATH is shared by package installation,
+the dev server, and the agent. If mise is missing, Builder downloads its
+[official installer](https://mise.jdx.dev/installing-mise.html) and installs a
+private copy under Builder's state directory. First-run setup requires internet
+access; no preinstalled npm or mise, administrator access, or shell activation
+is needed. Setup progress and download/install failures appear in the launcher.
+
 ## Start here
 
 - [How it works](docs/how-it-works.md): the parts, start-up, the rules the

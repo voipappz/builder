@@ -214,8 +214,18 @@ pub fn api_url_from_dir(api_dir: &Path) -> Option<String> {
 }
 
 async fn run(program: &str, args: &[&str], cwd: &Path, env: &HashMap<String, String>) -> Result<String, String> {
-    let output = tokio::process::Command::new(program)
-        .args(args)
+    // npm ships as npm.cmd on Windows and must run through cmd.exe.
+    #[cfg(windows)]
+    let mut command = if program == "npm" {
+        let mut command = tokio::process::Command::new("cmd.exe");
+        command.args(["/d", "/c", "npm"]);
+        command
+    } else {
+        tokio::process::Command::new(program)
+    };
+    #[cfg(not(windows))]
+    let mut command = tokio::process::Command::new(program);
+    let output = command.args(args)
         .current_dir(cwd)
         .env_clear()
         .envs(env)
@@ -233,6 +243,106 @@ async fn run(program: &str, args: &[&str], cwd: &Path, env: &HashMap<String, Str
             String::from_utf8_lossy(&output.stderr).trim()
         ))
     }
+}
+
+fn node_pin(repo: &Path) -> String {
+    std::fs::read_to_string(repo.join("mise.toml"))
+        .ok()
+        .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+        .and_then(|value| value.get("tools")?.get("node")?.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "22".into())
+}
+
+async fn install_mise(
+    destination: &Path,
+    script: &str,
+    env: &HashMap<String, String>,
+) -> Result<(), String> {
+    let parent = destination.parent().ok_or("Invalid mise installation path")?;
+    tokio::fs::create_dir_all(parent).await.map_err(|e| format!("Create mise directory: {e}"))?;
+    let temporary = parent.join(format!("install-{}", uuid::Uuid::new_v4()));
+    tokio::fs::create_dir(&temporary).await.map_err(|e| format!("Create mise installer directory: {e}"))?;
+    let installer = temporary.join(if cfg!(windows) { "install.ps1" } else { "install.sh" });
+    let result = async {
+        tokio::fs::write(&installer, script).await.map_err(|e| format!("Save mise installer: {e}"))?;
+        let mut install_env = env.clone();
+        install_env.insert("MISE_INSTALL_PATH".into(), destination.to_string_lossy().into_owned());
+        install_env.insert("MISE_INSTALL_MODIFY_PATH".into(), "0".into());
+        install_env.insert("MISE_INSTALL_HELP".into(), "0".into());
+        let path = installer.to_string_lossy();
+        #[cfg(windows)]
+        run("powershell.exe", &["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", &path], parent, &install_env).await?;
+        #[cfg(not(windows))]
+        run("sh", &[&path], parent, &install_env).await?;
+        run(&destination.to_string_lossy(), &["--version"], parent, env).await
+            .map_err(|e| format!("mise installation did not produce a working executable: {e}"))?;
+        Ok(())
+    }.await;
+    let _ = tokio::fs::remove_file(&installer).await;
+    let _ = tokio::fs::remove_dir(&temporary).await;
+    result
+}
+
+async fn ensure_mise(
+    repo: &Path,
+    env: &HashMap<String, String>,
+    progress: &impl Fn(&str),
+) -> Result<PathBuf, String> {
+    let executable = if cfg!(windows) { "mise.exe" } else { "mise" };
+    let managed = state_dir().join("tools").join(executable);
+    let existing = which::which_in(executable, env.get("PATH"), repo).ok()
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local/bin").join(executable)).filter(|p| p.is_file()))
+        .or_else(|| managed.is_file().then(|| managed.clone()));
+    if let Some(path) = existing {
+        return Ok(path);
+    }
+
+    progress("Installing mise for Builder (first run)…");
+    let url = if cfg!(windows) { "https://mise.run/powershell" } else { "https://mise.run" };
+    let script = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build().map_err(|e| format!("Create mise download client: {e}"))?
+        .get(url).send().await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|e| format!("Could not download the mise installer. Check your internet connection and retry: {e}"))?
+        .text().await.map_err(|e| format!("Read mise installer: {e}"))?;
+    install_mise(&managed, &script, env).await
+        .map_err(|e| format!("Could not install mise for Builder: {e}"))?;
+    Ok(managed)
+}
+
+async fn ensure_node(
+    repo: &Path,
+    env: &mut HashMap<String, String>,
+    progress: &impl Fn(&str),
+) -> Result<(), String> {
+    let pin = node_pin(repo);
+    let version = run("node", &["--version"], repo, env).await.unwrap_or_default();
+    let major = version.trim_start_matches('v').split('.').next().and_then(|v| v.parse::<u32>().ok());
+    let required = pin.split('.').next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(22);
+    if major.is_some_and(|v| v >= required) && run("npm", &["--version"], repo, env).await.is_ok() {
+        return Ok(());
+    }
+    let mise = ensure_mise(repo, env, progress).await?;
+    let mise = mise.to_string_lossy();
+    let tool = format!("node@{pin}");
+    // We already read the tool pin. Bootstrap must also work in a fresh,
+    // untrusted checkout without loading its mise hooks or environment.
+    let mut mise_env = env.clone();
+    mise_env.insert("MISE_NO_CONFIG".into(), "1".into());
+    progress(&format!("Installing Node {pin} and npm with mise…"));
+    run(&mise, &["install", &tool], repo, &mise_env).await?;
+    let location = run(&mise, &["where", &tool], repo, &mise_env).await?;
+    let bin = PathBuf::from(location);
+    #[cfg(not(windows))]
+    let bin = bin.join("bin");
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(env.get("PATH").map(String::as_str).unwrap_or_default()));
+    let path = std::env::join_paths(paths).map_err(|e| format!("Node PATH: {e}"))?;
+    env.insert("PATH".into(), path.to_string_lossy().into_owned());
+    run("npm", &["--version"], repo, env).await
+        .map_err(|e| format!("mise installed Node but npm is still unavailable: {e}"))?;
+    Ok(())
 }
 
 /// The checkout to work in: the configured workspace, or Builder's own
@@ -311,13 +421,14 @@ pub async fn start(settings: &Settings, progress: impl Fn(&str)) -> Result<Runni
         .filter(|p| p.is_dir())
         .or_else(dirs::home_dir)
         .unwrap_or_else(std::env::temp_dir);
-    let env = crate::shell_env::capture_shell_env(&env_dir.to_string_lossy(), None)
+    let mut env = crate::shell_env::capture_shell_env(&env_dir.to_string_lossy(), None)
         .await
         .unwrap_or_else(|e| {
             warn!("Shell environment capture failed, using the process environment: {}", e);
             std::env::vars().collect()
         });
 
+    ensure_node(&env_dir, &mut env, &progress).await?;
     let workspace = ensure_workspace(settings, &env, &progress).await?;
     let api_url = settings
         .api_url
@@ -414,6 +525,57 @@ pub async fn start(settings: &Settings, progress: impl Fn(&str)) -> Result<Runni
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mise_bootstrap_installs_to_private_path_and_reports_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("private tools/mise");
+        let env = HashMap::from([("PATH".into(), "/usr/bin:/bin".into())]);
+        let script = "#!/bin/sh\nset -eu\n[ \"$MISE_INSTALL_MODIFY_PATH\" = 0 ]\nprintf '#!/bin/sh\\necho mise-test\\n' > \"$MISE_INSTALL_PATH\"\nchmod 755 \"$MISE_INSTALL_PATH\"\n";
+        install_mise(&destination, script, &env).await.unwrap();
+        assert_eq!(run(destination.to_str().unwrap(), &["--version"], dir.path(), &env).await.unwrap(), "mise-test");
+        assert_eq!(std::fs::read_dir(destination.parent().unwrap()).unwrap().count(), 1);
+
+        let failed = dir.path().join("failed/mise");
+        let error = install_mise(&failed, "echo download-failed >&2; exit 1", &env).await.unwrap_err();
+        assert!(error.contains("download-failed"), "{error}");
+        assert!(!failed.exists());
+        assert_eq!(std::fs::read_dir(failed.parent().unwrap()).unwrap().count(), 0);
+        let error = install_mise(&failed, "exit 0", &env).await.unwrap_err();
+        assert!(error.contains("working executable"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn missing_npm_uses_mise_and_exports_node_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        let node_bin = dir.path().join("runtime/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&node_bin).unwrap();
+        std::fs::write(dir.path().join("mise.toml"), "[tools]\nnode = '22'\n").unwrap();
+        let script = format!(
+            "#!/bin/sh\n[ \"$MISE_NO_CONFIG\" = 1 ] || exit 7\n[ \"$2\" = node@22 ] || exit 9\ncase $1 in\ninstall) exit 0;;\nwhere) printf '%s\\n' '{}' ;;\n*) exit 8;;\nesac\n",
+            dir.path().join("runtime").display()
+        );
+        for (path, contents) in [
+            (bin.join("mise"), script.as_str()),
+            (node_bin.join("npm"), "#!/bin/sh\necho 10.0.0\n"),
+            (node_bin.join("node"), "#!/bin/sh\necho v22.0.0\n"),
+        ] {
+            std::fs::write(&path, contents).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut env = HashMap::from([("PATH".into(), bin.to_string_lossy().into_owned())]);
+        ensure_node(dir.path(), &mut env, &|_| {}).await.unwrap();
+        assert!(!env.contains_key("MISE_NO_CONFIG"));
+        assert_eq!(run("node", &["--version"], dir.path(), &env).await.unwrap(), "v22.0.0");
+        // A working runtime must not invoke mise again.
+        std::fs::remove_file(bin.join("mise")).unwrap();
+        ensure_node(dir.path(), &mut env, &|_| {}).await.unwrap();
+    }
 
     #[test]
     fn settings_round_trip_and_defaults() {

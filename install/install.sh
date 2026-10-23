@@ -69,7 +69,7 @@ APP_REPO=$(cd "$APP_REPO" && pwd)
 [ -z "$API_DIR" ] || [ -d "$API_DIR" ] || { echo "API checkout $API_DIR does not exist" >&2; exit 1; }
 [ -z "$API_DIR" ] || API_DIR=$(cd "$API_DIR" && pwd)
 
-for tool in git node npm xdg-open setsid; do
+for tool in git xdg-open setsid; do
   command -v "$tool" >/dev/null 2>&1 || { echo "Missing $tool" >&2; exit 1; }
 done
 command -v claude >/dev/null 2>&1 || echo "Note: Claude Code (claude) is not on PATH; the agent needs it signed in."
