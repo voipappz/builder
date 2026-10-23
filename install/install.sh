@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install VoipAppz Builder for the current user on Linux. No sudo.
 #
-#   install/install.sh [--workspace DIR] [--api-dir DIR] [--client-url URL]
+#   install/install.sh [--app-repo DIR] [--api-dir DIR] [--client-url URL]
 #                      [--no-start-app] [--yes]
 #   install/install.sh --uninstall [--purge]
 #
@@ -19,7 +19,7 @@ APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 ICONS="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/256x256/apps"
 DESKTOP="$APPS/voipappz-builder.desktop"
 
-WORKSPACE="$PARENT/app-builder"
+APP_REPO="$PARENT/app"
 API_DIR="$PARENT/voipappz-api"
 CLIENT_URL="http://localhost:3000"
 START_APP=1
@@ -29,7 +29,7 @@ PURGE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --workspace) WORKSPACE="$2"; shift 2 ;;
+    --app-repo) APP_REPO="$2"; shift 2 ;;
     --api-dir) API_DIR="$2"; shift 2 ;;
     --client-url) CLIENT_URL="$2"; shift 2 ;;
     --no-start-app) START_APP=0; shift ;;
@@ -60,20 +60,16 @@ ask() {
 
 echo "VoipAppz Builder installer"
 echo
-WORKSPACE=$(ask "App checkout the agent works in (a git worktree of ../app)" "$WORKSPACE")
+APP_REPO=$(ask "The app repository Builder works on (Builder makes its own worktree of it)" "$APP_REPO")
 API_DIR=$(ask "voipappz-api checkout for the local API (empty for none)" "$API_DIR")
 CLIENT_URL=$(ask "Chat client and previews (the app's dev server)" "$CLIENT_URL")
 
-[ -d "$WORKSPACE" ] || {
-  echo "Workspace $WORKSPACE does not exist. Create it with:" >&2
-  echo "  git -C $PARENT/app worktree add $WORKSPACE feat/builder-client" >&2
-  exit 1
-}
-WORKSPACE=$(cd "$WORKSPACE" && pwd)
+git -C "$APP_REPO" rev-parse --git-dir >/dev/null 2>&1 || { echo "$APP_REPO is not a git repository" >&2; exit 1; }
+APP_REPO=$(cd "$APP_REPO" && pwd)
 [ -z "$API_DIR" ] || [ -d "$API_DIR" ] || { echo "API checkout $API_DIR does not exist" >&2; exit 1; }
 [ -z "$API_DIR" ] || API_DIR=$(cd "$API_DIR" && pwd)
 
-for tool in node npm curl xdg-open setsid; do
+for tool in git node npm xdg-open setsid; do
   command -v "$tool" >/dev/null 2>&1 || { echo "Missing $tool" >&2; exit 1; }
 done
 command -v claude >/dev/null 2>&1 || echo "Note: Claude Code (claude) is not on PATH; the agent needs it signed in."
@@ -91,17 +87,15 @@ install -m 755 "$REPO/install/voipappz-builder-launch" "$BIN/voipappz-builder-la
 umask 077
 {
   echo "# VoipAppz Builder settings, written by install/install.sh."
-  printf 'WORKSPACE=%q\n' "$WORKSPACE"
+  printf 'APP_REPO=%q\n' "$APP_REPO"
   printf 'API_DIR=%q\n' "$API_DIR"
   printf 'CLIENT_URL=%q\n' "$CLIENT_URL"
-  printf 'PREVIEW_URL=%q\n' "$CLIENT_URL"
   printf 'START_APP=%q\n' "$START_APP"
   echo "PORT=9832"
 } > "$CONFIG_DIR/builder.env"
 umask 022
 
-ICON_SOURCE="$WORKSPACE/public/images/VA_logo_blue.png"
-[ -f "$ICON_SOURCE" ] && install -m 644 "$ICON_SOURCE" "$ICONS/voipappz-builder.png"
+install -m 644 "$REPO/desktop/icons/icon.png" "$ICONS/voipappz-builder.png"
 
 cat > "$DESKTOP" <<EOF
 [Desktop Entry]

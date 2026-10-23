@@ -27,19 +27,18 @@ runs it from the tray.
 ## Run it (development)
 
 ```text
-# 1. A worktree of the app for the agent to work in, with the chat client
-git -C ../app worktree add ../app-builder feat/builder-client
-# 2. The app's dev server in that worktree (serves the chat and the previews)
-(cd ../app-builder && npm run dev)
-# 3. Optional: the local API's MCP tools, as `make claude` does
-#    export VA_MCP_BASIC=$(cd ../voipappz-api && MCP_AUTH=1 bin/dev-status.sh)
-# 4. Builder
-cargo run -p builder-cli -- --workspace ../app-builder \
-  --client-url http://localhost:3000 [--api-url http://127.0.0.1:5055]
+cargo run -p builder-cli -- --app-repo ../app --start-app --api-dir ../voipappz-api --open
 ```
 
-Open the printed `http://127.0.0.1:9832/?secret=…` address. Claude Code
-must be signed in (`claude`) on this machine.
+Builder works on the app repository (`../app`) in its own git worktree,
+`../app-builder` on branch `builder/work`, created from `origin/main` on first
+start, so your own checkout is never touched. It links `node_modules` from
+`../app` (or runs `npm ci`), starts the app's dev server there, which serves
+the chat and the previews, and, when the local API answers, gives the agent
+its `/api/mcp` tools with the login `make claude` uses. The agent edits files
+without asking (its "Accept edits" mode) and asks before running commands.
+
+Claude Code must be signed in (`claude`) on this machine.
 
 ## Start here
 

@@ -68,7 +68,7 @@ async fn pick_workspace(app: &AppHandle) -> Option<PathBuf> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .set_title("Choose the app checkout VoipAppz Builder works in")
+        .set_title("Choose the VoipAppz app repository (../app); Builder makes its own worktree of it")
         .pick_folder(move |folder| {
             let _ = tx.send(folder.and_then(|f| f.into_path().ok()));
         });
@@ -87,10 +87,10 @@ async fn restart(app: AppHandle) {
         Ok(s) => s,
         Err(e) => return show_error(&app, format!("Settings could not be read: {}", e)),
     };
-    if settings.workspace.is_none() {
+    if settings.workspace.is_none() && settings.app_repo.is_none() {
         match pick_workspace(&app).await {
             Some(folder) => {
-                settings.workspace = Some(folder);
+                set_app_repo(&mut settings, folder);
                 if let Err(e) = settings.save() {
                     return show_error(&app, format!("Settings could not be saved: {}", e));
                 }
@@ -98,7 +98,7 @@ async fn restart(app: AppHandle) {
             None => {
                 return show_error(
                     &app,
-                    "No workspace chosen. Use \"Choose Workspace…\" in the VoipAppz Builder menu.",
+                    "No app repository chosen. Use \"Choose App Repository…\" in the VoipAppz Builder menu.",
                 )
             }
         }
@@ -131,10 +131,23 @@ async fn open_page(app: AppHandle) {
     }
 }
 
+/// Use `folder` as the app repository, Builder's own worktree of it as the
+/// workspace, and a sibling voipappz-api checkout for the API, if present.
+fn set_app_repo(settings: &mut Settings, folder: PathBuf) {
+    if settings.api_dir.is_none() {
+        let api = folder.with_file_name("voipappz-api");
+        if api.join("bin/dev-status.sh").exists() {
+            settings.api_dir = Some(api);
+        }
+    }
+    settings.app_repo = Some(folder);
+    settings.workspace = None;
+}
+
 async fn choose_workspace(app: AppHandle) {
     if let Some(folder) = pick_workspace(&app).await {
         let mut settings = Settings::load().unwrap_or_default();
-        settings.workspace = Some(folder);
+        set_app_repo(&mut settings, folder);
         if let Err(e) = settings.save() {
             return show_error(&app, format!("Settings could not be saved: {}", e));
         }
@@ -161,7 +174,7 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let open = MenuItem::with_id(app, "open", "Open VoipAppz Builder", true, None::<&str>)?;
-            let workspace = MenuItem::with_id(app, "workspace", "Choose Workspace…", true, None::<&str>)?;
+            let workspace = MenuItem::with_id(app, "workspace", "Choose App Repository…", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let logs = MenuItem::with_id(app, "logs", "View Logs", true, None::<&str>)?;
             let at_login = CheckMenuItem::with_id(
