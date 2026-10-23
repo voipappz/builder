@@ -1,8 +1,23 @@
 # VoipAppz Builder plan
 
-Status: first-version implementation plan. No installer, worker or integrated
-chat has been implemented yet. Work starts in this repository and changes the
-sibling repositories only in their own implementation branches.
+Status: first version built and released (0.1.0, 2026-10-23). See "Status"
+below for what works and [docs/how-it-works.md](docs/how-it-works.md) for how
+it fits together. The rest of this file is the plan and its decisions.
+
+## Status (2026-10-23)
+
+| Area | State |
+|---|---|
+| Local server (`core/`, `cli/`) | Done. Stub page, launch secret, Host/Origin checks, only the page, websocket and `/mcp/api` routes |
+| Chat (`../app` `src/builder-client/`) | Done, merged (app pull request 263). `ChatView` over ACP, permission bar, agent modes, Admin/User previews |
+| Agent | Claude Code through `@agentclientprotocol/claude-agent-acp`, on the user's own account, chosen by the server |
+| Where it works | Builder's own worktree of `../app` (`../app-builder`, branch `builder/work` from `origin/main`), created on first start |
+| Write limits | The agent writes only in the app worktree: the server refuses edits outside it, in `.git` or through symlinks. Edits inside are accepted ("Accept edits" mode); commands still ask |
+| API | Read-only, through Builder's `/mcp/api` proxy: write tools hidden and refused, login kept in Builder |
+| Desktop app and installers | Done. Tray app (`desktop/`); `.exe`, `.dmg`, `.deb`, `.AppImage` built by `.github/workflows/installers.yml`; release v0.1.0 (unsigned pre-release) |
+| Linux per-user install | Done. `install/install.sh` and `voipappz-builder-launch` |
+| Contracts | Re-scoped to ACP, merged in the API (pull requests 140 and 152) |
+| Not yet | A full chat turn (the account's Claude quota), React runtime tools, `/dev/mcp` read tools, changes/checkpoint panel, hosted `/builder/client.js`, signing and updates |
 
 Decisions recorded 2026-10-17:
 
@@ -353,8 +368,8 @@ these tools cover what only the running app knows.
 
 | Tool | Rails reference | Vite reference | VoipAppz home |
 |---|---|---|---|
-| `project_eval`: run code inside the running process, with stdout and a timeout | Ruby `eval` | JS in a worker | API: Ruby in the Puma process. App: JS in the Vite dev server |
-| `execute_sql_query`: parameterized, first 50 rows | ActiveRecord or Sequel | none | API: Sequel on the development database |
+| `project_eval`: run code inside the running process, with stdout and a timeout | Ruby `eval` | JS in a worker | App only (the Vite dev server). Not in the API: the agent never writes there |
+| `execute_sql_query`: parameterized, first 50 rows | ActiveRecord or Sequel | none | API: Sequel on the development database, read-only transaction |
 | `get_logs`: tail plus a regex filter | `log/<env>.log` | server console | API: the local server log. App: Vite's console |
 | `get_docs`: docs for the exact locked version | gems | packages and types | API: gems from `Gemfile.lock`. App: `node_modules` |
 | `get_source_location`: where a symbol is defined, including generated methods | yes | yes | Both |
@@ -494,7 +509,7 @@ fall back to the old Assistant or any VML/Bot endpoint.
 4. **Vite:** attach to a known dev server or start one in the managed workspace.
    Validate project identity as well as HTTP response; another process on port
    3000 is not a successful connection. Supervise Vite and display startup logs.
-5. **MCP checks:** verify public docs, authorized API tools and the React MCP server (through the relay, as the Ruby client sees it) via real
+5. **MCP checks:** verify public docs, authorized API tools and the React MCP server via real
    initialize/list/call probes. Tools and permissions shown must be discovered,
    not inferred from a green TCP connection. Ruby dev MCP is optional and local
    or isolated-development-only, never required on the shared production API.
@@ -575,11 +590,9 @@ review check from the first configuration module onward.
 
 API specs run in Compose `web`. App local verification is lint-only under its
 current policy; builds/browser tests use CI or an explicit user exception.
-Builder code uses focused unit tests and worker integration tests. Rust/Cargo
-were unavailable on the current shell during planning (Node 20 is present), so
-install/configure the build toolchain before claiming Rust verification, or
-decide for a Node worker before step 3. Restore CI using credentials
-authorized to publish Actions workflows before implementation depends on it.
+Builder code uses focused unit tests and server integration tests (`cargo
+test`, 152 tests). CI runs them in `.github/workflows/test.yml`; the desktop
+app compiles only in `installers.yml`, since it needs WebKitGTK on Linux.
 
 ## Follow-on milestone: publish a customer application
 
@@ -601,22 +614,8 @@ Order of work:
    descriptor (now with the optional `chatClient.url`), connection state,
    project, error and checkpoint stay; session, run, event and the run
    lifecycle were removed, since ACP defines sessions, turns and streamed
-   updates. API pull request 140 was merged on 2026-10-22 without the Codex
-   fixes (`79521d2`), and the re-scope (`b54f503`) sits on the same merged
-   branch. Both need a new branch from the API's `main` and a new pull
-   request.
-   **First version, 2026-10-23 (steps 4 and 5):** the core and CLI are
-   restored (`core/`, `cli/`, binary `voipappz-builder`) with Builder's own
-   server in `core/src/builder.rs`, and the chat client is on the app branch
-   `feat/builder-client` (worktree `../app-builder`, `src/builder-client/`).
-   Checked live: no secret gives 401, a foreign Origin 403, `/shell` 404;
-   the Claude ACP adapter starts in the workspace even when the client asks
-   for `/etc` or names its own command; `initialize` and `session/new`
-   succeed. The first prompt was refused by the Claude account's weekly
-   limit, so step 6 is still open. The browser page needs the app's Vite dev
-   server, which the app's `AGENTS.md` allows only with an explicit
-   exception.
-4. Restore the upstream core into `builder`: the Rust
+   updates. Merged in the API (pull requests 140 and 152).
+4. Done 2026-10-23. Restore the upstream core into `builder`: the Rust
    workspace (`core`, `cli`, Tauri shell), renamed to VoipAppz, Apache-2.0
    license and NOTICE kept. Before anything else, harden it: per-launch
    secret on every request, remove `/proxy`, agent commands from Builder's
@@ -624,17 +623,22 @@ Order of work:
    inside the workspace root, no config values in logs. Stub page points at
    the chat client address (default `https://switch.voipappz.io`, local
    `http://localhost:3000`). Run it as the CLI; the Tauri tray comes later.
-5. In `../app`, add the hosted chat client entry: `ChatView` from
+   (The tray app and installers were added the same day.)
+5. Done 2026-10-23, app pull request 263. In `../app`, add the hosted chat client entry: `ChatView` from
    `packages/chat-ui` wrapped in an ACP client that speaks the core's
    websocket, mapping ACP updates onto its props. Run it with `vite` on
    port 3000.
-6. Proof: from the chat, Claude Code (user's own account) finds an existing
+6. Open: blocked only by the Claude account's quota. Checked live so far: no
+   secret gives 401, a foreign Origin 403, `/shell` 404; the agent starts in
+   the workspace even when the client names `/etc` or its own command;
+   `initialize` and `session/new` succeed. Proof: from the chat, Claude Code (user's own account) finds an existing
    component in `../app` and reports the file and line.
 7. In `../voipappz-api`, add `/dev/mcp` (`Endpoints::McpDev`,
-   `Mediators::Mcp::DevToolbox`) with `project_eval`, `execute_sql_query`,
-   `get_logs`, `get_source_location` and `get_docs`, development and
-   localhost only, and update `docs/MCP.md`. Builder hands it to the agent
-   next to `/api/mcp`.
+   `Mediators::Mcp::DevToolbox`) with read tools only, since the agent
+   writes only in the app: `execute_sql_query` in a read-only transaction,
+   `get_logs`, `get_source_location` and `get_docs`; no `project_eval`.
+   Development and localhost only, and update `docs/MCP.md`. Builder hands
+   it to the agent next to `/api/mcp`, through its read-only proxy.
 8. In `../app`, add the React MCP (runtime tools) as a dev-only Vite
    plugin, and hand it to the agent.
 9. Then edits, validation, checkpoints, previews and the browser bridge

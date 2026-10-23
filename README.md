@@ -2,11 +2,10 @@
 
 **Build your custom PBX through chat, see it running, and refine it through chat.**
 
-VoipAppz Builder is a planned desktop coding environment for custom PBX
-development on the VoipAppz platform. A customer describes a change in chat.
-The Builder agent in the VoipAppz API reads and edits their React project,
-validates it, and shows the result in separate Admin and User previews. The
-customer reviews the diff and saves a revision.
+VoipAppz Builder is a desktop coding environment for the VoipAppz React app.
+You describe a change in chat; a coding agent (Claude Code, on your own
+account) edits the app in Builder's own worktree, and the result shows in
+separate Admin and User previews next to the chat.
 
 **Status: first version.** A local server (`core/`, `cli/`; see
 [NOTICE](NOTICE) for its origin) serves a page that loads the chat from the
@@ -42,6 +41,8 @@ Claude Code must be signed in (`claude`) on this machine.
 
 ## Start here
 
+- [How it works](docs/how-it-works.md): the parts, start-up, the rules the
+  server enforces, settings, running and releasing.
 - [PLAN.md](PLAN.md): product boundary, delivery steps, MCP topology, installer
   flow, branding and acceptance checks.
 - [Assistant dependency audit](docs/assistant-dependency-audit.md): the current
@@ -57,13 +58,15 @@ Claude Code must be signed in (`claude`) on this machine.
   draws the chat and holds no data logic.
 - Builder has no connection to the app's Assistant, VML or Bot code, endpoints,
   storage or libraries.
-- The Ruby API holds the MCP client. The React project hosts a dev-only MCP
-  server. The Builder desktop app relays between them.
-- The first API target is `https://switch.voipappz.io`.
+- The agent writes code only in the app worktree; the server refuses writes
+  anywhere else.
+- The VoipAppz API is read-only for the agent: Builder proxies its MCP tools
+  and refuses the ones that change the platform.
+- The first API target is the local API (`voipappz-api`, `make dev`).
 
 ## Related repositories
 
 | Repository | Role |
 |---|---|
-| `voipappz/app` | React/Vite admin app, the customer project template, the chat UI package and the React MCP server |
-| `voipappz-api` | Builder agent, project/session/run API, MCP client, platform tools |
+| `voipappz/app` | The React app Builder works on; the chat client (`src/builder-client/`) and the chat UI package (`packages/chat-ui`) |
+| `voipappz/api` | The VoipAppz API; its `/api/mcp` tools reach the agent read-only; the vendored contracts |
