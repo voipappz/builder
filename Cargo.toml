@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+    "core",
+    "cli",
+    "desktop",
+]
+# The desktop app needs WebKitGTK and friends on Linux; build it with
+# `cargo build -p voipappz-builder-desktop` or the Tauri CLI.
+default-members = [
+    "core",
+    "cli",
+]
+
+[workspace.package]
+version = "0.1.0"

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "VoipAppz Builder",
+  "mainBinaryName": "voipappz-builder-desktop",
+  "version": "0.1.0",
+  "identifier": "io.voipappz.builder",
+  "build": {
+    "frontendDist": null
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "appimage", "nsis", "app", "dmg"],
+    "publisher": "VoipAppz",
+    "category": "DeveloperTool",
+    "shortDescription": "Build the VoipAppz app through chat and see it running",
+    "longDescription": "VoipAppz Builder runs a coding agent on your app checkout, shows the chat from the VoipAppz app and previews the result.",
+    "copyright": "Copyright (c) 2026 VoipAppz. Portions Copyright (c) 2025 Dashbit, Apache-2.0.",
+    "license": "Apache-2.0",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../NOTICE": "NOTICE",
+      "../LICENSE": "LICENSE"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico"
+      }
+    }
+  }
+}

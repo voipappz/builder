@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.voipappz.io/builder/v1/checkpoint.schema.json",
+  "title": "Checkpoint",
+  "description": "A saved, validated revision. validation.revision must equal revision; the validators check that beyond the schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "projectId", "revision", "parentRevision", "summary", "validation", "createdBy", "createdAt"],
+  "properties": {
+    "id": { "$ref": "common.schema.json#/$defs/checkpointId" },
+    "projectId": { "$ref": "common.schema.json#/$defs/projectId" },
+    "revision": { "$ref": "common.schema.json#/$defs/revision" },
+    "parentRevision": { "$ref": "common.schema.json#/$defs/revision" },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filesChanged", "insertions", "deletions"],
+      "properties": {
+        "filesChanged": { "type": "integer", "minimum": 0 },
+        "insertions": { "type": "integer", "minimum": 0 },
+        "deletions": { "type": "integer", "minimum": 0 },
+        "description": { "type": "string", "maxLength": 2000 }
+      }
+    },
+    "validation": {
+      "allOf": [
+        { "$ref": "common.schema.json#/$defs/validationResult" },
+        { "properties": { "status": { "const": "passed" } } }
+      ]
+    },
+    "createdBy": { "$ref": "common.schema.json#/$defs/actorId" },
+    "createdAt": { "$ref": "common.schema.json#/$defs/timestamp" }
+  }
+}

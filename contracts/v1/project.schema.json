@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.voipappz.io/builder/v1/project.schema.json",
+  "title": "Project (API record)",
+  "description": "A Builder project as the API returns it. Local paths are worker-local and never stored here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "customerId", "templateRevision", "draftRevision", "worker", "createdAt", "updatedAt"],
+  "properties": {
+    "id": { "$ref": "common.schema.json#/$defs/projectId" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "customerId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "templateRevision": { "$ref": "common.schema.json#/$defs/revision" },
+    "draftRevision": { "$ref": "common.schema.json#/$defs/revision" },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "enum": ["online", "offline"] },
+        "lastSeenAt": { "$ref": "common.schema.json#/$defs/timestamp" }
+      }
+    },
+    "createdAt": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "updatedAt": { "$ref": "common.schema.json#/$defs/timestamp" }
+  }
+}

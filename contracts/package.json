@@ -1,0 +1,28 @@
+{
+  "name": "@voipappz/builder-contracts",
+  "version": "1.0.0",
+  "description": "Versioned contracts shared by the VoipAppz Builder shell, local server and API: project descriptor, connection states, projects, checkpoints and errors. Sessions, turns and streamed updates are ACP's, not ours.",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./v1/*": "./v1/*"
+  },
+  "files": [
+    "src",
+    "v1",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "ajv": "8.17.1",
+    "ajv-formats": "3.0.1"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "code": "stale_revision",
+  "message": "The project changed since this patch was prepared.",
+  "retryable": true,
+  "expectedRevision": "9f1c2b3a4d5e6f708192a3b4c5d6e7f8091a2b3c",
+  "actualRevision": "a0b1c2d3e4f5061728394a5b6c7d8e9f00112233"
+}

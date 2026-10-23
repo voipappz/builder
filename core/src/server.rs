@@ -1,0 +1,1710 @@
+use crate::command::{create_cmd_command, create_shell_command, spawn_command, ChildProcess};
+use crate::config::Config;
+use crate::http_handlers::{client_proxy_handler, download_handler, proxy_handler, DownloadState};
+use crate::utils::{load_tls_config_from_paths, normalize_path, wslpath_to_windows};
+use axum::{
+    body::{Body, Bytes},
+    extract::{Json, Query, Request},
+    http::{header, StatusCode},
+    middleware,
+    response::Response,
+    routing::{get, post},
+    Router,
+};
+use bytes::BytesMut;
+use reqwest::{Client, Url};
+use rustls::ClientConfig;
+use rustls_platform_verifier::ConfigVerifierExt;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::env;
+use std::path::Path;
+use std::process::Stdio;
+use std::sync::Arc;
+use std::time::{Duration, UNIX_EPOCH};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tracing::{debug, error, info};
+use which;
+
+#[derive(Deserialize)]
+struct ShellParams {
+    command: String,
+    cwd: Option<String>,
+    env: Option<HashMap<String, String>>,
+    #[serde(default)]
+    wsl_distro: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CmdParams {
+    command: String,
+    args: Option<Vec<String>>,
+    input: Option<String>,
+    cwd: Option<String>,
+    env: Option<HashMap<String, String>>,
+    #[serde(default)]
+    wsl_distro: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StatParams {
+    path: String,
+    #[serde(default)]
+    wsl_distro: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ListDirParams {
+    path: String,
+    #[serde(default)]
+    wsl_distro: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct MkdirParams {
+    path: String,
+    #[serde(default)]
+    wsl_distro: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ReadFileParams {
+    path: String,
+    #[serde(default)]
+    wsl_distro: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct WriteFileParams {
+    path: String,
+    content: String,
+    #[serde(default)]
+    exclusive: bool,
+    /// SHA-256 (hex) that the file contents on disk must match
+    #[serde(default)]
+    expected_sha256: Option<String>,
+    #[serde(default)]
+    wsl_distro: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct DeleteFileParams {
+    path: String,
+    #[serde(default)]
+    wsl_distro: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CopyParams {
+    from_path: String,
+    to_path: String,
+    #[serde(default)]
+    wsl_distro: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct MoveParams {
+    from_path: String,
+    to_path: String,
+    #[serde(default)]
+    wsl_distro: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct WhichParams {
+    command: String,
+    // Note that cwd is only used in case PATH in env is also set
+    cwd: Option<String>,
+    env: Option<HashMap<String, String>>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    wsl_distro: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ShellEnvParams {
+    path: String,
+    #[serde(default)]
+    wsl_distro: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OpenParams {
+    path: String,
+    #[serde(default)]
+    reveal: bool,
+}
+
+#[derive(Deserialize)]
+struct AboutParams {
+    #[serde(default)]
+    #[allow(dead_code)]
+    wsl_distro: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum StatResponse {
+    StatResponseOk {
+        success: bool,
+        mtime: u64,
+        #[serde(rename = "type")]
+        path_type: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        windows_path: Option<String>,
+    },
+    StatResponseErr {
+        success: bool,
+        error: String,
+    },
+}
+
+#[derive(Serialize)]
+struct DirEntry {
+    name: String,
+    #[serde(rename = "type")]
+    entry_type: String,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ListDirResponse {
+    ListDirResponseOk {
+        success: bool,
+        entries: Vec<DirEntry>,
+    },
+    ListDirResponseErr {
+        success: bool,
+        error: String,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum MkdirResponse {
+    MkdirResponseOk { success: bool },
+    MkdirResponseErr { success: bool, error: String },
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ReadFileResponse {
+    ReadFileResponseOk {
+        success: bool,
+        content: String,
+        mtime: u64,
+    },
+    ReadFileResponseErr {
+        success: bool,
+        error: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum WriteFileResponse {
+    WriteFileResponseOk {
+        success: bool,
+        bytes_written: usize,
+        mtime: u64,
+    },
+    WriteFileResponseErr {
+        success: bool,
+        error: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum DeleteFileResponse {
+    DeleteFileResponseOk { success: bool },
+    DeleteFileResponseErr { success: bool, error: String },
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum CopyResponse {
+    CopyResponseOk { success: bool },
+    CopyResponseErr { success: bool, error: String },
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum MoveResponse {
+    MoveResponseOk { success: bool },
+    MoveResponseErr { success: bool, error: String },
+}
+
+#[derive(Serialize)]
+struct WhichResponse {
+    path: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ShellEnvResponse {
+    ShellEnvResponseOk {
+        success: bool,
+        env: HashMap<String, String>,
+    },
+    ShellEnvResponseErr {
+        success: bool,
+        error: String,
+    },
+}
+
+#[derive(Serialize)]
+struct SystemInfo {
+    os: &'static str,
+    arch: String,
+    family: &'static str,
+    target: &'static str,
+    wsl: bool,
+}
+
+#[derive(Serialize)]
+struct AboutResponse {
+    name: String,
+    version: String,
+    system: SystemInfo,
+    cache_dir: String,
+    http_port: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    https_port: Option<u16>,
+}
+
+#[derive(Serialize)]
+struct CliInfo {
+    version: String,
+    system: SystemInfo,
+    cache_dir: String,
+    home_dir: Option<String>,
+    http_port: u16,
+    https_port: Option<u16>,
+}
+
+#[derive(Serialize)]
+struct CheckOriginResponse {
+    valid: bool,
+}
+
+#[derive(Clone)]
+struct ServerConfig {
+    allowed_origins: Vec<String>,
+    port: u16,
+    https_port: Option<u16>,
+    // Whether this config belongs to the development server (the dev port).
+    dev: bool,
+}
+
+pub async fn start_http_server(
+    config: Config,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    serve_http_server_with_shutdown(config, std::future::pending()).await
+}
+
+fn get_bind_addr(port: u16, allow_remote_access: bool) -> std::net::SocketAddr {
+    let ip = if allow_remote_access {
+        std::net::Ipv4Addr::UNSPECIFIED
+    } else {
+        std::net::Ipv4Addr::LOCALHOST
+    };
+    std::net::SocketAddr::from((ip, port))
+}
+
+fn with_server_config(router: Router, server_config: ServerConfig) -> Router {
+    router.layer(middleware::from_fn(move |mut req: Request, next| {
+        req.extensions_mut().insert(server_config.clone());
+        verify_origin(req, next)
+    }))
+}
+
+fn with_client_proxy(mut router: Router, client: &Client, client_url: String) -> Router {
+    // Proxy /builder to the client dev server.
+    for route_path in ["/builder", "/builder/{*path}"] {
+        let client = client.clone();
+        let client_url = client_url.clone();
+        router = router.route(
+            route_path,
+            axum::routing::any(move |req| {
+                client_proxy_handler(req, client.clone(), client_url.clone())
+            }),
+        );
+    }
+    router
+}
+
+pub async fn serve_http_server_with_shutdown(
+    config: Config,
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    serve_http_server_inner(config, None, shutdown_signal).await
+}
+
+pub async fn serve_http_server_with_listener(
+    config: Config,
+    listener: tokio::net::TcpListener,
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    serve_http_server_inner(config, Some(listener), shutdown_signal).await
+}
+
+async fn serve_http_server_inner(
+    config: Config,
+    listener: Option<tokio::net::TcpListener>,
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+    // Single client without automatic compression (we handle it manually in download handler)
+    let client = Client::builder()
+        .use_preconfigured_tls(ClientConfig::with_platform_verifier())
+        .no_gzip()
+        .no_brotli()
+        .build()?;
+
+    let http_addr = get_bind_addr(config.port, config.allow_remote_access);
+    let http_handle = axum_server::Handle::new();
+
+    // Determine the port - if listener provided, use its port; otherwise use config
+    let port = if let Some(ref listener) = listener {
+        listener.local_addr()?.port()
+    } else {
+        config.port
+    };
+
+    let https_port = config.https_port;
+
+    // Optional development port - serves the same app on an additional HTTP port
+    let dev_port = env::var("VOIPAPPZ_BUILDER_DEV_PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok());
+
+    let download_state = DownloadState::new();
+
+    // Build allowed origins for both HTTP and HTTPS
+    let mut allowed_origins = config.allowed_origins.clone();
+
+    allowed_origins.push(format!("http://localhost:{}", port));
+    allowed_origins.push(format!("http://127.0.0.1:{}", port));
+
+    if let Some(https_port) = https_port {
+        allowed_origins.push(format!("https://localhost:{}", https_port));
+        allowed_origins.push(format!("https://127.0.0.1:{}", https_port));
+    }
+
+    if let Some(dev_port) = dev_port {
+        allowed_origins.push(format!("http://localhost:{}", dev_port));
+        allowed_origins.push(format!("http://127.0.0.1:{}", dev_port));
+    }
+
+    let server_config = ServerConfig {
+        allowed_origins,
+        port,
+        https_port,
+        dev: false,
+    };
+
+    // Create download routes
+    let client_for_download = client.clone();
+    let download_routes = Router::new()
+        .route(
+            "/download",
+            post(move |params, state| {
+                let client = client_for_download.clone();
+                download_handler(params, state, client)
+            }),
+        )
+        .with_state(download_state);
+
+    // Create WebSocket channel states and routes
+    let acp_channel_state = crate::ws::acp::AcpChannelState::new();
+    let mcp_channel_state = crate::ws::mcp::McpChannelState::new();
+    let ws_state = crate::ws::WsState::new()
+        .with_acp_state(acp_channel_state)
+        .with_mcp_state(mcp_channel_state);
+
+    let mcp_channel_post_routes = Router::new()
+        .route(
+            "/socket/mcp-remote-client",
+            post(crate::ws::mcp::mcp_channel_client_handler),
+        )
+        .with_state(ws_state.mcp.clone());
+
+    let ws_routes = Router::new()
+        .route("/socket/websocket", get(crate::ws::ws_handler))
+        .with_state(ws_state.clone());
+
+    // Create the main app without state
+    let client_for_proxy = client.clone();
+    let app = Router::new()
+        .route("/", get(root_handler))
+        .route("/manifest.json", get(manifest_json_handler))
+        .route("/sw.js", get(service_worker_handler))
+        .route("/icon-192.png", get(icon_192_handler))
+        .route("/icon-512.png", get(icon_512_handler))
+        // Always use POST routes so it triggers origin checks
+        .route("/about", post(about_handler))
+        .route("/stat", post(stat_handler))
+        .route("/listdir", post(listdir_handler))
+        .route("/check-origin", post(check_origin_handler))
+        .route("/read", post(read_file_handler))
+        .route("/write", post(write_file_handler))
+        .route("/delete", post(delete_file_handler))
+        .route("/mkdir", post(mkdir_handler))
+        .route("/copy", post(copy_handler))
+        .route("/move", post(move_handler))
+        .route("/shell", post(shell_handler))
+        .route("/cmd", post(cmd_handler))
+        .route("/which", post(which_handler))
+        .route("/shell-env", post(shell_env_handler))
+        .route("/open", post(open_handler))
+        .route(
+            "/proxy",
+            axum::routing::any(move |params, req| {
+                let client = client_for_proxy.clone();
+                proxy_handler(params, req, client)
+            }),
+        )
+        .merge(download_routes)
+        .merge(ws_routes)
+        .merge(mcp_channel_post_routes);
+
+    // The dev server mirrors the main app, with the following differences:
+    //   * it exposes /builder proxying to the local TS, so the app is
+    //     Builder-enabled
+    //   * it disables CSP, so it can be embedded in VoipAppz Builder
+    let dev_app = dev_port.map(|_| {
+        let mut dev_app = app.clone();
+        if let Ok(client_url) = env::var("VOIPAPPZ_BUILDER_CLIENT_URL") {
+            dev_app = with_client_proxy(dev_app, &client, client_url);
+        }
+        let dev_config = ServerConfig {
+            dev: true,
+            ..server_config.clone()
+        };
+        with_server_config(dev_app, dev_config)
+    });
+
+    let app = with_server_config(app, server_config);
+
+    // Optionally set up HTTPS server
+    let (https_handle, https_task) = if let Some(https_port) = https_port {
+        info!("Starting HTTPS server on port {}", https_port);
+
+        let cert_path = config
+            .https_cert_path
+            .as_ref()
+            .expect("https_cert_path validated");
+        let key_path = config
+            .https_key_path
+            .as_ref()
+            .expect("https_key_path validated");
+        let rustls_config = load_tls_config_from_paths(cert_path, key_path)?;
+
+        let https_addr = get_bind_addr(https_port, config.allow_remote_access);
+        let tls_config = axum_server::tls_rustls::RustlsConfig::from_config(rustls_config);
+        let https_handle = axum_server::Handle::new();
+        let https_handle_clone = https_handle.clone();
+
+        let task = tokio::spawn({
+            let app = app.clone();
+            async move {
+                axum_server::bind_rustls(https_addr, tls_config)
+                    .handle(https_handle_clone)
+                    .serve(app.into_make_service())
+                    .await
+            }
+        });
+
+        (Some(https_handle), Some(task))
+    } else {
+        (None, None)
+    };
+
+    // Optionally start an additional HTTP server on the development port
+    let (dev_handle, dev_task) = match (dev_port, dev_app) {
+        (Some(dev_port), Some(dev_app)) => {
+            info!("Starting dev HTTP server on port {}", dev_port);
+
+            let dev_addr = get_bind_addr(dev_port, config.allow_remote_access);
+            let dev_handle = axum_server::Handle::new();
+            let dev_handle_clone = dev_handle.clone();
+
+            let task = tokio::spawn(async move {
+                axum_server::bind(dev_addr)
+                    .handle(dev_handle_clone)
+                    .serve(dev_app.into_make_service())
+                    .await
+            });
+
+            (Some(dev_handle), Some(task))
+        }
+        _ => (None, None),
+    };
+
+    // Start HTTP server
+    let http_handle_clone = http_handle.clone();
+    let http_task = if let Some(listener) = listener {
+        let std_listener = listener.into_std()?;
+        tokio::spawn(async move {
+            axum_server::from_tcp(std_listener)
+                .handle(http_handle_clone)
+                .serve(app.into_make_service())
+                .await
+        })
+    } else {
+        tokio::spawn(async move {
+            axum_server::bind(http_addr)
+                .handle(http_handle_clone)
+                .serve(app.into_make_service())
+                .await
+        })
+    };
+
+    // Spawn shutdown handler that triggers graceful shutdown with timeout
+    tokio::spawn({
+        let http_handle = http_handle.clone();
+        let https_handle = https_handle.clone();
+        let dev_handle = dev_handle.clone();
+        async move {
+            shutdown_signal.await;
+            info!("Shutdown signal received, initiating graceful shutdown with 10s timeout");
+            http_handle.graceful_shutdown(Some(Duration::from_secs(10)));
+            if let Some(handle) = https_handle {
+                handle.graceful_shutdown(Some(Duration::from_secs(10)));
+            }
+            if let Some(handle) = dev_handle {
+                handle.graceful_shutdown(Some(Duration::from_secs(10)));
+            }
+        }
+    });
+
+    // Wait for all servers
+    let http_result = http_task.await;
+    if let Some(https_task) = https_task {
+        let https_result = https_task.await;
+        https_result??;
+    }
+    if let Some(dev_task) = dev_task {
+        let dev_result = dev_task.await;
+        dev_result??;
+    }
+    http_result??;
+
+    // Clear all WebSocket state (includes ACP channel process cleanup)
+    ws_state.clear().await;
+
+    Ok(())
+}
+
+fn is_valid_origin(req: &Request, config: &ServerConfig) -> bool {
+    let headers = req.headers();
+    let origin_str = headers
+        .get(header::ORIGIN)
+        .and_then(|origin| origin.to_str().ok());
+
+    // If there is no origin header, it is valid
+    let Some(origin_str) = origin_str else {
+        return true;
+    };
+
+    // Check if origin is in allowed list
+    if config.allowed_origins.contains(&origin_str.to_string()) {
+        return true;
+    }
+
+    // Parse and validate localhost variants
+    if let Ok(origin_url) = Url::parse(origin_str) {
+        if let Some(host) = origin_url.host_str() {
+            let is_localhost_variant =
+                host == "localhost" || host == "127.0.0.1" || host.ends_with(".localhost");
+
+            let scheme = origin_url.scheme();
+            let origin_port = origin_url.port();
+
+            // Check if scheme + port matches our HTTP server
+            if is_localhost_variant && scheme == "http" && origin_port.unwrap_or(80) == config.port
+            {
+                return true;
+            }
+
+            // Check if scheme + port matches our HTTPS server
+            if is_localhost_variant
+                && scheme == "https"
+                && config.https_port.is_some()
+                && origin_port.unwrap_or(443) == config.https_port.unwrap()
+            {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+async fn verify_origin(
+    req: Request,
+    next: axum::middleware::Next,
+) -> Result<Response<Body>, StatusCode> {
+    // Skip origin verification for /check-origin routes
+    let path = req.uri().path();
+    if path == "/check-origin" {
+        return Ok(next.run(req).await);
+    }
+
+    let config = req.extensions().get::<ServerConfig>().ok_or_else(|| {
+        error!("ServerConfig not found in request extensions");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if is_valid_origin(&req, config) {
+        return Ok(next.run(req).await);
+    }
+
+    debug!(
+        "Rejected request with origin: {:?}",
+        req.headers().get(header::ORIGIN)
+    );
+    Err(StatusCode::FORBIDDEN)
+}
+
+#[derive(Serialize)]
+struct ShellError {
+    error: String,
+}
+
+fn shell_error(message: &str) -> (StatusCode, Json<ShellError>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ShellError {
+            error: message.to_string(),
+        }),
+    )
+}
+
+async fn shell_handler(
+    Json(payload): Json<ShellParams>,
+) -> Result<Response<Body>, (StatusCode, Json<ShellError>)> {
+    let cwd = payload.cwd.unwrap_or(".".to_string());
+    let env = payload.env.unwrap_or_else(|| std::env::vars().collect());
+
+    let mut command =
+        create_shell_command(&payload.command, env, &cwd, payload.wsl_distro.as_deref());
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let process = spawn_command(command)
+        .map_err(|e| shell_error(&format!("Failed to spawn command: {}", e)))?;
+
+    stream_process_response(process)
+}
+
+async fn cmd_handler(
+    Json(payload): Json<CmdParams>,
+) -> Result<Response<Body>, (StatusCode, Json<ShellError>)> {
+    let cwd = payload.cwd.unwrap_or(".".to_string());
+    let env = payload.env.unwrap_or_else(|| std::env::vars().collect());
+    let args = payload.args.unwrap_or_default();
+
+    let mut command = create_cmd_command(
+        &payload.command,
+        &args,
+        env,
+        &cwd,
+        payload.wsl_distro.as_deref(),
+    );
+    command
+        .stdin(if payload.input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut process = spawn_command(command)
+        .map_err(|e| shell_error(&format!("Failed to spawn command: {}", e)))?;
+
+    if let Some(input) = payload.input {
+        if let Some(mut stdin) = process.child.stdin.take() {
+            tokio::spawn(async move {
+                let _ = stdin.write_all(input.as_bytes()).await;
+            });
+        }
+    }
+
+    stream_process_response(process)
+}
+
+fn stream_process_response(
+    mut process: ChildProcess,
+) -> Result<Response<Body>, (StatusCode, Json<ShellError>)> {
+    let mut stdout = Some(
+        process
+            .child
+            .stdout
+            .take()
+            .ok_or_else(|| shell_error("Failed to get process stdout"))?,
+    );
+    let mut stderr = Some(
+        process
+            .child
+            .stderr
+            .take()
+            .ok_or_else(|| shell_error("Failed to get process stderr"))?,
+    );
+
+    // Wrap process in Arc<Mutex<Option>> so we can take it out at the end.
+    // If stream is dropped early, the ChildProcess::Drop will kill the process tree.
+    let process_holder = Arc::new(std::sync::Mutex::new(Some(process)));
+    let process_holder_clone = process_holder.clone();
+
+    let stream = async_stream::stream! {
+        // Hold reference to process_holder so ChildProcess lives as long as stream
+        let _process_holder = process_holder_clone;
+
+        let (mut stdout_buf, mut stderr_buf) = (vec![0u8; 4096], vec![0u8; 4096]);
+
+        loop {
+            tokio::select! {
+                result = async { stdout.as_mut().unwrap().read(&mut stdout_buf).await }, if stdout.is_some() => {
+                    match result {
+                        Ok(0) => stdout = None,
+                        Ok(n) => yield Ok(create_data_chunk(&stdout_buf[..n])),
+                        Err(e) => { yield Err(e); break; }
+                    }
+                }
+                result = async { stderr.as_mut().unwrap().read(&mut stderr_buf).await }, if stderr.is_some() => {
+                    match result {
+                        Ok(0) => stderr = None,
+                        Ok(n) => yield Ok(create_data_chunk(&stderr_buf[..n])),
+                        Err(e) => { yield Err(e); break; }
+                    }
+                }
+                else => break,
+            }
+        }
+
+        // Take the process to wait on it (prevents Drop from killing it since process completed normally)
+        let process_opt = _process_holder.lock().ok().and_then(|mut g: std::sync::MutexGuard<Option<ChildProcess>>| g.take());
+        let status = if let Some(mut process) = process_opt {
+            match process.child.wait().await {
+                Ok(status) => Some(status.code().unwrap_or(-1)),
+                Err(e) => {
+                    yield Err(e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        if let Some(code) = status {
+            yield Ok(create_status_chunk(code));
+        }
+    };
+
+    let body = Body::from_stream(stream);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/octet-stream")
+        .body(body)
+        .map_err(|e| shell_error(&format!("Failed to build response: {}", e)))
+}
+
+fn create_data_chunk(data: &[u8]) -> Bytes {
+    let mut chunk = BytesMut::new();
+    chunk.extend_from_slice(&[0u8]); // type = 0 (data)
+    chunk.extend_from_slice(&(data.len() as u32).to_be_bytes()); // length
+    chunk.extend_from_slice(data); // data
+    chunk.freeze()
+}
+
+fn create_status_chunk(status: i32) -> Bytes {
+    let json = format!(r#"{{"status":{}}}"#, status);
+    let mut chunk = BytesMut::new();
+    chunk.extend_from_slice(&[1u8]); // type = 1 (status)
+    chunk.extend_from_slice(&(json.len() as u32).to_be_bytes());
+    chunk.extend_from_slice(json.as_bytes());
+    chunk.freeze()
+}
+
+async fn read_file_handler(
+    Json(payload): Json<ReadFileParams>,
+) -> Result<Json<ReadFileResponse>, StatusCode> {
+    let file_path = match normalize_path(&payload.path, payload.wsl_distro.as_deref()).await {
+        Ok(path) => path,
+        Err(error) => {
+            return Ok(Json(ReadFileResponse::ReadFileResponseErr {
+                success: false,
+                error,
+                reason: None,
+            }));
+        }
+    };
+
+    if !Path::new(&file_path).is_absolute() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let result = async {
+        let content = tokio::fs::read_to_string(&file_path).await.map_err(|e| {
+            let reason = match e.kind() {
+                std::io::ErrorKind::NotFound => Some("not_found".to_string()),
+                _ => None,
+            };
+            (e.kind().to_string(), reason)
+        })?;
+        let mtime = fetch_mtime(file_path).map_err(|e| (e, None))?;
+        Ok::<_, (String, Option<String>)>((content, mtime))
+    }
+    .await;
+
+    match result {
+        Ok((content, mtime)) => Ok(Json(ReadFileResponse::ReadFileResponseOk {
+            success: true,
+            content,
+            mtime,
+        })),
+        Err((error, reason)) => Ok(Json(ReadFileResponse::ReadFileResponseErr {
+            success: false,
+            error,
+            reason,
+        })),
+    }
+}
+
+enum WriteFileError {
+    /// The file already exists and the write is exclusive
+    Conflict,
+    /// The file contents do not match the expected hash
+    HashMismatch(String),
+    Other(String),
+}
+
+async fn write_file_handler(
+    Json(payload): Json<WriteFileParams>,
+) -> Result<Json<WriteFileResponse>, StatusCode> {
+    let file_path = match normalize_path(&payload.path, payload.wsl_distro.as_deref()).await {
+        Ok(path) => path,
+        Err(error) => {
+            return Ok(Json(WriteFileResponse::WriteFileResponseErr {
+                success: false,
+                error,
+                reason: None,
+            }));
+        }
+    };
+
+    if !Path::new(&file_path).is_absolute() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let content = payload.content.clone();
+    let exclusive = payload.exclusive;
+    let expected_sha256 = payload.expected_sha256.clone();
+    let bytes_written = content.len();
+
+    let result = async {
+        let path = Path::new(&file_path);
+
+        if let Some(expected_sha256) = &expected_sha256 {
+            check_file_hash(path, expected_sha256).await?;
+        }
+
+        let parent_path = path.parent().unwrap_or(path);
+        if !parent_path.exists() {
+            tokio::fs::create_dir_all(parent_path)
+                .await
+                .map_err(|e| WriteFileError::Other(e.kind().to_string()))?;
+        }
+
+        if exclusive {
+            // Atomic exclusive write using O_CREAT | O_EXCL semantics
+            use tokio::io::AsyncWriteExt;
+            let mut file = tokio::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .await
+                .map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::AlreadyExists {
+                        WriteFileError::Conflict
+                    } else {
+                        WriteFileError::Other(e.kind().to_string())
+                    }
+                })?;
+            file.write_all(content.as_bytes())
+                .await
+                .map_err(|e| WriteFileError::Other(e.kind().to_string()))?;
+        } else {
+            tokio::fs::write(&path, content)
+                .await
+                .map_err(|e| WriteFileError::Other(e.kind().to_string()))?;
+        }
+
+        let mtime = fetch_mtime(file_path).map_err(WriteFileError::Other)?;
+        Ok::<_, WriteFileError>(mtime)
+    }
+    .await;
+
+    match result {
+        Ok(mtime) => Ok(Json(WriteFileResponse::WriteFileResponseOk {
+            success: true,
+            bytes_written,
+            mtime,
+        })),
+        Err(WriteFileError::Conflict) => Err(StatusCode::CONFLICT),
+        Err(WriteFileError::HashMismatch(error)) => {
+            Ok(Json(WriteFileResponse::WriteFileResponseErr {
+                success: false,
+                error,
+                reason: Some("hash_mismatch".to_string()),
+            }))
+        }
+        Err(WriteFileError::Other(error)) => Ok(Json(WriteFileResponse::WriteFileResponseErr {
+            success: false,
+            error,
+            reason: None,
+        })),
+    }
+}
+
+/// Fails unless the file contents hash to `expected_sha256`.
+///
+/// A missing file counts as a mismatch, since the caller expects
+/// specific contents to be there.
+async fn check_file_hash(path: &Path, expected_sha256: &str) -> Result<(), WriteFileError> {
+    let mut file = match tokio::fs::File::open(path).await {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(WriteFileError::HashMismatch(
+                "the file does not exist".to_string(),
+            ));
+        }
+        Err(e) => return Err(WriteFileError::Other(e.kind().to_string())),
+    };
+
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .await
+            .map_err(|e| WriteFileError::Other(e.kind().to_string()))?;
+
+        if count == 0 {
+            break;
+        }
+
+        hasher.update(&buffer[..count]);
+    }
+
+    let actual_hash = format!("{:x}", hasher.finalize());
+
+    if actual_hash.eq_ignore_ascii_case(expected_sha256) {
+        Ok(())
+    } else {
+        Err(WriteFileError::HashMismatch(
+            "the file has been modified since it was last read".to_string(),
+        ))
+    }
+}
+
+async fn delete_file_handler(
+    Json(payload): Json<DeleteFileParams>,
+) -> Result<Json<DeleteFileResponse>, StatusCode> {
+    let file_path = match normalize_path(&payload.path, payload.wsl_distro.as_deref()).await {
+        Ok(path) => path,
+        Err(error) => {
+            return Ok(Json(DeleteFileResponse::DeleteFileResponseErr {
+                success: false,
+                error,
+            }));
+        }
+    };
+
+    if !Path::new(&file_path).is_absolute() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let result = tokio::fs::remove_file(&file_path).await;
+
+    match result {
+        Ok(()) => Ok(Json(DeleteFileResponse::DeleteFileResponseOk {
+            success: true,
+        })),
+        Err(error) => Ok(Json(DeleteFileResponse::DeleteFileResponseErr {
+            success: false,
+            error: error.kind().to_string(),
+        })),
+    }
+}
+
+async fn copy_handler(Json(payload): Json<CopyParams>) -> Result<Json<CopyResponse>, StatusCode> {
+    let from_path = match normalize_path(&payload.from_path, payload.wsl_distro.as_deref()).await {
+        Ok(path) => path,
+        Err(error) => {
+            return Ok(Json(CopyResponse::CopyResponseErr {
+                success: false,
+                error,
+            }));
+        }
+    };
+
+    let to_path = match normalize_path(&payload.to_path, payload.wsl_distro.as_deref()).await {
+        Ok(path) => path,
+        Err(error) => {
+            return Ok(Json(CopyResponse::CopyResponseErr {
+                success: false,
+                error,
+            }));
+        }
+    };
+
+    if !Path::new(&from_path).is_absolute() || !Path::new(&to_path).is_absolute() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let result = tokio::fs::copy(&from_path, &to_path)
+        .await
+        .map_err(|e| e.kind().to_string());
+
+    match result {
+        Ok(_) => Ok(Json(CopyResponse::CopyResponseOk { success: true })),
+        Err(error) => Ok(Json(CopyResponse::CopyResponseErr {
+            success: false,
+            error,
+        })),
+    }
+}
+
+async fn move_handler(Json(payload): Json<MoveParams>) -> Result<Json<MoveResponse>, StatusCode> {
+    let from_path = match normalize_path(&payload.from_path, payload.wsl_distro.as_deref()).await {
+        Ok(path) => path,
+        Err(error) => {
+            return Ok(Json(MoveResponse::MoveResponseErr {
+                success: false,
+                error,
+            }));
+        }
+    };
+
+    let to_path = match normalize_path(&payload.to_path, payload.wsl_distro.as_deref()).await {
+        Ok(path) => path,
+        Err(error) => {
+            return Ok(Json(MoveResponse::MoveResponseErr {
+                success: false,
+                error,
+            }));
+        }
+    };
+
+    if !Path::new(&from_path).is_absolute() || !Path::new(&to_path).is_absolute() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let result = tokio::fs::rename(&from_path, &to_path)
+        .await
+        .map_err(|e| e.kind().to_string());
+
+    match result {
+        Ok(_) => Ok(Json(MoveResponse::MoveResponseOk { success: true })),
+        Err(error) => Ok(Json(MoveResponse::MoveResponseErr {
+            success: false,
+            error,
+        })),
+    }
+}
+
+async fn open_handler(Json(payload): Json<OpenParams>) -> Result<StatusCode, StatusCode> {
+    let path = Path::new(&payload.path);
+
+    if !path.exists() {
+        error!("Open: path does not exist: {}", payload.path);
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    #[cfg(target_os = "windows")]
+    let path_str = path
+        .canonicalize()
+        .map_err(|e| {
+            error!("Open: failed to canonicalize path: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .to_string_lossy()
+        .into_owned();
+    #[cfg(not(target_os = "windows"))]
+    let path_str = &payload.path;
+
+    let spawn_result = if payload.reveal {
+        #[cfg(target_os = "macos")]
+        {
+            crate::command::command_with_limited_env("open")
+                .arg("-R")
+                .arg(path_str)
+                .spawn()
+        }
+        #[cfg(target_os = "windows")]
+        {
+            crate::command::command_with_limited_env("explorer.exe")
+                .raw_arg(format!("/select,\"{}\"", path_str))
+                .spawn()
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if env::var("WSL_DISTRO_NAME").is_ok() {
+                let win_path = wslpath_to_windows(&payload.path, None).await.map_err(|e| {
+                    error!("Open: wslpath failed: {}", e);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+                crate::command::command_with_limited_env("explorer.exe")
+                    .arg(format!("/select,{}", win_path))
+                    .spawn()
+            } else {
+                let open_path = if path.is_file() {
+                    path.parent()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or(payload.path.clone())
+                } else {
+                    payload.path.clone()
+                };
+                crate::command::command_with_limited_env("xdg-open")
+                    .arg(&open_path)
+                    .spawn()
+            }
+        }
+    } else {
+        #[cfg(target_os = "macos")]
+        let program = "open";
+        #[cfg(target_os = "linux")]
+        let program = "xdg-open";
+        #[cfg(target_os = "windows")]
+        let program = "explorer.exe";
+
+        #[cfg(target_os = "linux")]
+        if env::var("WSL_DISTRO_NAME").is_ok() {
+            let win_path = wslpath_to_windows(&payload.path, None).await.map_err(|e| {
+                error!("Open: wslpath failed: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+            crate::command::command_with_limited_env("explorer.exe")
+                .arg(&win_path)
+                .spawn()
+        } else {
+            crate::command::command_with_limited_env(program)
+                .arg(path_str)
+                .spawn()
+        }
+        #[cfg(not(target_os = "linux"))]
+        crate::command::command_with_limited_env(program)
+            .arg(path_str)
+            .spawn()
+    };
+
+    spawn_result.map_err(|e| {
+        error!("Open: failed to spawn: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn stat_handler(Query(query): Query<StatParams>) -> Result<Json<StatResponse>, StatusCode> {
+    let file_path = match normalize_path(&query.path, query.wsl_distro.as_deref()).await {
+        Ok(path) => path,
+        Err(error) => {
+            return Ok(Json(StatResponse::StatResponseErr {
+                success: false,
+                error,
+            }));
+        }
+    };
+
+    if !Path::new(&file_path).is_absolute() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let result = fetch_stat(&file_path);
+
+    match result {
+        Ok((mtime, path_type)) => {
+            let windows_path = if let Some(distro) = query.wsl_distro.as_deref() {
+                wslpath_to_windows(&query.path, Some(distro)).await.ok()
+            } else {
+                None
+            };
+            Ok(Json(StatResponse::StatResponseOk {
+                success: true,
+                mtime,
+                path_type,
+                windows_path,
+            }))
+        }
+        Err(error) => Ok(Json(StatResponse::StatResponseErr {
+            success: false,
+            error,
+        })),
+    }
+}
+
+async fn listdir_handler(
+    Query(query): Query<ListDirParams>,
+) -> Result<Json<ListDirResponse>, StatusCode> {
+    let dir_path = match normalize_path(&query.path, query.wsl_distro.as_deref()).await {
+        Ok(path) => path,
+        Err(error) => {
+            return Ok(Json(ListDirResponse::ListDirResponseErr {
+                success: false,
+                error,
+            }));
+        }
+    };
+
+    if !Path::new(&dir_path).is_absolute() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let result = fetch_dir_entries(&dir_path);
+
+    match result {
+        Ok(entries) => Ok(Json(ListDirResponse::ListDirResponseOk {
+            success: true,
+            entries,
+        })),
+        Err(error) => Ok(Json(ListDirResponse::ListDirResponseErr {
+            success: false,
+            error,
+        })),
+    }
+}
+
+async fn mkdir_handler(
+    Json(payload): Json<MkdirParams>,
+) -> Result<Json<MkdirResponse>, StatusCode> {
+    let dir_path = match normalize_path(&payload.path, payload.wsl_distro.as_deref()).await {
+        Ok(path) => path,
+        Err(error) => {
+            return Ok(Json(MkdirResponse::MkdirResponseErr {
+                success: false,
+                error,
+            }));
+        }
+    };
+
+    if !Path::new(&dir_path).is_absolute() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let result = tokio::fs::create_dir_all(&dir_path).await;
+
+    match result {
+        Ok(()) => Ok(Json(MkdirResponse::MkdirResponseOk { success: true })),
+        Err(error) => Ok(Json(MkdirResponse::MkdirResponseErr {
+            success: false,
+            error: error.kind().to_string(),
+        })),
+    }
+}
+
+fn fetch_dir_entries(path: &str) -> Result<Vec<DirEntry>, String> {
+    let entries = std::fs::read_dir(path).map_err(|e| e.kind().to_string())?;
+
+    let mut result = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| e.kind().to_string())?;
+
+        // Skip entries with invalid UTF-8 names
+        let Some(name) = entry.file_name().to_str().map(|s| s.to_string()) else {
+            continue;
+        };
+
+        let file_type = entry.file_type().map_err(|e| e.kind().to_string())?;
+        let entry_type = if file_type.is_dir() {
+            "directory"
+        } else if file_type.is_file() {
+            "file"
+        } else if file_type.is_symlink() {
+            "symlink"
+        } else {
+            "other"
+        };
+
+        result.push(DirEntry {
+            name,
+            entry_type: entry_type.to_string(),
+        });
+    }
+
+    Ok(result)
+}
+
+fn fetch_mtime(path: String) -> Result<u64, String> {
+    let metadata = std::fs::metadata(path).map_err(|e| e.kind().to_string())?;
+    let mtime = metadata.modified().map_err(|e| e.kind().to_string())?;
+
+    return mtime
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .map_err(|_| "system time error".to_string());
+}
+
+fn fetch_stat(path: &str) -> Result<(u64, String), String> {
+    let metadata = std::fs::metadata(path).map_err(|e| e.kind().to_string())?;
+    let mtime = metadata
+        .modified()
+        .map_err(|e| e.kind().to_string())?
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .map_err(|_| "system time error".to_string())?;
+
+    let path_type = if metadata.is_dir() {
+        "directory"
+    } else if metadata.is_file() {
+        "file"
+    } else if metadata.is_symlink() {
+        "symlink"
+    } else {
+        "other"
+    };
+
+    Ok((mtime, path_type.to_string()))
+}
+
+async fn which_handler(Json(params): Json<WhichParams>) -> Result<Json<WhichResponse>, StatusCode> {
+    #[cfg(target_os = "windows")]
+    {
+        // Check if we're in WSL context
+        if let Some(distro) = params.wsl_distro.as_deref() {
+            // Run which command inside WSL
+            let cwd = params.cwd.as_deref().unwrap_or(".");
+            let env_clone = params.env.clone().unwrap_or_default();
+            let command_str = format!("which {}", params.command);
+
+            let mut command = create_shell_command(&command_str, env_clone, cwd, Some(distro));
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+            let output = command
+                .output()
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path.is_empty() {
+                    return Ok(Json(WhichResponse { path: Some(path) }));
+                }
+            }
+            return Ok(Json(WhichResponse { path: None }));
+        }
+    }
+
+    // Non-WSL case: use the which crate
+    let result = if let Some(env) = params.env {
+        if let Some(paths) = env.get("PATH") {
+            let paths = paths.clone();
+            let cwd = params.cwd.unwrap_or(".".to_string());
+            let command = params.command.clone();
+            tokio::task::spawn_blocking(move || which::which_in(command, Some(paths), cwd)).await
+        } else {
+            tokio::task::spawn_blocking(|| which::which(params.command)).await
+        }
+    } else {
+        tokio::task::spawn_blocking(|| which::which(params.command)).await
+    };
+
+    match result {
+        Ok(Ok(path)) => Ok(Json(WhichResponse {
+            // this is a lossy conversion in case the path contains non UTF-8
+            // characters, but we don't try to use the path as is and it's also unlikely,
+            // so it's fine
+            path: Some(path.display().to_string()),
+        })),
+        _ => Ok(Json(WhichResponse { path: None })),
+    }
+}
+
+async fn shell_env_handler(Json(params): Json<ShellEnvParams>) -> Json<ShellEnvResponse> {
+    match crate::shell_env::capture_shell_env(&params.path, params.wsl_distro.as_deref()).await {
+        Ok(env) => Json(ShellEnvResponse::ShellEnvResponseOk { success: true, env }),
+        Err(error) => Json(ShellEnvResponse::ShellEnvResponseErr {
+            success: false,
+            error,
+        }),
+    }
+}
+
+fn cache_dir() -> String {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("voipappz-builder")
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn html_escape(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len());
+    for c in input.chars() {
+        match c {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(c),
+        }
+    }
+    escaped
+}
+
+async fn about_handler(
+    Query(params): Query<AboutParams>,
+    req: Request,
+) -> Result<Json<AboutResponse>, StatusCode> {
+    let config = req
+        .extensions()
+        .get::<ServerConfig>()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (port, https_port) = (config.port, config.https_port);
+
+    let cache_dir = cache_dir();
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(distro) = params.wsl_distro.as_deref() {
+            let mut command = create_shell_command("uname -m", HashMap::new(), "~", Some(distro));
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+            let output = command
+                .output()
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            if output.status.success() {
+                let arch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                return Ok(Json(AboutResponse {
+                    name: "builder-cli".to_string(),
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                    system: SystemInfo {
+                        os: "linux",
+                        arch,
+                        family: "unix",
+                        target: env!("TARGET"),
+                        wsl: true,
+                    },
+                    cache_dir,
+                    http_port: port,
+                    https_port,
+                }));
+            };
+
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    _ = params;
+
+    Ok(Json(AboutResponse {
+        name: "builder-cli".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        system: SystemInfo {
+            os: std::env::consts::OS,
+            arch: std::env::consts::ARCH.to_string(),
+            family: std::env::consts::FAMILY,
+            target: env!("TARGET"),
+            wsl: false,
+        },
+        cache_dir,
+        http_port: port,
+        https_port,
+    }))
+}
+
+async fn check_origin_handler(req: Request) -> Result<Json<CheckOriginResponse>, StatusCode> {
+    let config = req.extensions().get::<ServerConfig>().ok_or_else(|| {
+        error!("ServerConfig not found in request extensions");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let valid = is_valid_origin(&req, config);
+
+    Ok(Json(CheckOriginResponse { valid }))
+}
+
+async fn root_handler(req: Request) -> Result<Response<Body>, StatusCode> {
+    let config = req.extensions().get::<ServerConfig>().ok_or_else(|| {
+        error!("ServerConfig not found in request extensions");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let dev = config.dev;
+
+    let client_url =
+        env::var("VOIPAPPZ_BUILDER_CLIENT_URL").unwrap_or_else(|_| "https://switch.voipappz.io".to_string());
+
+    let cli_info = CliInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        system: SystemInfo {
+            os: std::env::consts::OS,
+            arch: std::env::consts::ARCH.to_string(),
+            family: std::env::consts::FAMILY,
+            target: env!("TARGET"),
+            wsl: false,
+        },
+        cache_dir: cache_dir(),
+        home_dir: dirs::home_dir().map(|p| p.to_string_lossy().into_owned()),
+        http_port: config.port,
+        https_port: config.https_port,
+    };
+    let cli_info_json = serde_json::to_string(&cli_info).map_err(|e| {
+        error!("Failed to serialize CLI info: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="voipappz-builder:source" content="cli" />
+    <meta name="voipappz-builder:version" content="{}" />
+    <meta name="voipappz-builder:cli:info" content="{}" />
+    <script type="module" src="{}/builder/client.js"></script>
+    <script>
+      if ('serviceWorker' in navigator) {{
+        navigator.serviceWorker.register('/sw.js');
+      }}
+      if (/Chrome/.test(navigator.userAgent)) {{
+        const link = document.createElement('link');
+        link.rel = 'manifest';
+        link.href = '/manifest.json';
+        document.head.appendChild(link);
+      }}
+    </script>
+  </head>
+  <body></body>
+</html>"#,
+        env!("CARGO_PKG_VERSION"),
+        html_escape(&cli_info_json),
+        client_url,
+    );
+
+    let mut builder = Response::builder().header(header::CONTENT_TYPE, "text/html; charset=utf-8");
+
+    // We skip the frame restriction on the dev port, so the app can
+    // be embedded in VoipAppz Builder itself.
+    if !dev {
+        builder = builder.header(
+            header::CONTENT_SECURITY_POLICY,
+            "base-uri 'self'; frame-ancestors 'self'",
+        );
+    }
+
+    Ok(builder.body(Body::from(html)).unwrap())
+}
+
+async fn manifest_json_handler() -> Response<Body> {
+    let manifest = serde_json::json!({
+        "name": "VoipAppz Builder",
+        "short_name": "VoipAppz Builder",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#ffffff",
+        "theme_color": "#000000",
+        "description": "VoipAppz Builder",
+        "icons": [
+            {
+                "src": "/icon-192.png",
+                "sizes": "192x192",
+                "type": "image/png",
+                "purpose": "any maskable"
+            },
+            {
+                "src": "/icon-512.png",
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "any maskable"
+            }
+        ],
+        "protocol_handlers": [
+            {
+                "protocol": "web+voipappz-builder",
+                "url": "/?pwa=%s"
+            }
+        ]
+    });
+
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/manifest+json")
+        .body(Body::from(manifest.to_string()))
+        .unwrap()
+}
+
+async fn service_worker_handler() -> Response<Body> {
+    let sw = r##"const OFFLINE_HTML = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VoipAppz Builder</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #0d1117; color: #fff; }
+    p { font-size: 1.1rem; text-align: center; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <p>Could not load <span id="url"></span><br>Ensure VoipAppz Builder is running and <a href="#" onclick="location.reload();return false" style="color:#fff">refresh</a>.</p>
+  <script>document.getElementById('url').textContent = location.href;</script>
+</body>
+</html>`;
+
+self.addEventListener('install', event => {
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', event => {
+  event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener('fetch', event => {
+  if (event.request.mode === 'navigate' && new URL(event.request.url).pathname === '/') {
+    event.respondWith(
+      fetch(event.request).catch(() => new Response(OFFLINE_HTML, {
+        headers: { 'Content-Type': 'text/html' }
+      }))
+    );
+  }
+});"##;
+
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/javascript")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(Body::from(sw))
+        .unwrap()
+}
+
+async fn icon_192_handler() -> Response<Body> {
+    let bytes = include_bytes!("../icons/pwa-192.png");
+    Response::builder()
+        .header(header::CONTENT_TYPE, "image/png")
+        .body(Body::from(bytes.as_slice()))
+        .unwrap()
+}
+
+async fn icon_512_handler() -> Response<Body> {
+    let bytes = include_bytes!("../icons/pwa-512.png");
+    Response::builder()
+        .header(header::CONTENT_TYPE, "image/png")
+        .body(Body::from(bytes.as_slice()))
+        .unwrap()
+}

@@ -1,0 +1,56 @@
+[package]
+name = "builder-core"
+version.workspace = true
+edition = "2021"
+
+[lib]
+doctest = false
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+async-stream = "0.3"
+bytes = "1.10.1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+futures = "0.3"
+reqwest = { version = "0.12", features = ["stream", "json", "rustls-tls"], default-features = false }
+async-compression = { version = "0.4", features = ["tokio", "gzip", "brotli"] }
+rustls = "0.23"
+rustls-pemfile = "2.2"
+rustls-platform-verifier = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+dashmap = "6.0"
+notify = "8.1"
+uuid = { version = "1.11", features = ["v4", "serde"] }
+anyhow = "1.0"
+tar = "0.4"
+flate2 = "1.0"
+zip = { version = "7", features = ["deflate"] }
+which = "8.0"
+dirs = "5.0"
+portable-pty = "0.9"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winbase", "jobapi2", "winnt", "processthreadsapi", "handleapi", "errhandlingapi"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tower = { version = "0.5", features = ["util"] }
+hyper = { version = "1.0", features = ["full"] }
+http-body-util = "0.1"
+reqwest = { version = "0.12", features = ["json"] }
+tokio-tungstenite = "0.23"
+agent-client-protocol = "0.4.2"
+async-trait = "0.1"
+urlencoding = "2.1"
+tempfile = "3"

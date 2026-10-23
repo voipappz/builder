@@ -1,0 +1,5 @@
+{
+  "$comment": "The JSON path at which each invalid fixture must fail. Every implementation reports an error at this path.",
+  "failed-validation.json": "/validation/status",
+  "validation-for-other-revision.json": "/validation/revision"
+}

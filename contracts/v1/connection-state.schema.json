@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.voipappz.io/builder/v1/connection-state.schema.json",
+  "title": "Connection state",
+  "description": "What the Builder shell shows about its link to the API, the project and the worker. Each failure is its own state so the UI never reduces them to a generic error.",
+  "type": "object",
+  "required": ["state", "checkedAt"],
+  "properties": {
+    "state": {
+      "enum": [
+        "disconnected",
+        "connecting",
+        "api_unreachable",
+        "login_required",
+        "unauthorized",
+        "upgrade_required",
+        "project_unavailable",
+        "worker_offline",
+        "ready"
+      ]
+    },
+    "checkedAt": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "apiBaseUrl": { "type": "string", "maxLength": 512 },
+    "apiVersion": { "type": "string", "maxLength": 64 },
+    "builderApiVersion": { "type": "integer", "minimum": 1 },
+    "requiredBuilderApiVersion": { "type": "integer", "minimum": 1 },
+    "projectId": { "$ref": "common.schema.json#/$defs/projectId" },
+    "error": { "$ref": "error.schema.json" }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "state": { "not": { "const": "disconnected" } } } },
+      "then": { "required": ["apiBaseUrl"] }
+    },
+    {
+      "if": { "properties": { "state": { "enum": ["api_unreachable", "unauthorized", "project_unavailable"] } } },
+      "then": { "required": ["error"] }
+    },
+    {
+      "if": { "properties": { "state": { "const": "upgrade_required" } } },
+      "then": { "required": ["requiredBuilderApiVersion"] }
+    },
+    {
+      "if": { "properties": { "state": { "const": "worker_offline" } } },
+      "then": { "required": ["projectId"] }
+    },
+    {
+      "if": { "properties": { "state": { "const": "ready" } } },
+      "then": { "required": ["apiVersion", "builderApiVersion", "projectId"] }
+    }
+  ]
+}

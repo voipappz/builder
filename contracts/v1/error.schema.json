@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.voipappz.io/builder/v1/error.schema.json",
+  "title": "Builder error",
+  "description": "One error shape for API responses, run failures and tool failures.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["code", "message", "retryable"],
+  "properties": {
+    "code": {
+      "enum": [
+        "invalid_request",
+        "unauthenticated",
+        "forbidden",
+        "not_found",
+        "stale_revision",
+        "writer_busy",
+        "cancelled",
+        "timeout",
+        "budget_exceeded",
+        "worker_unavailable",
+        "tool_failed",
+        "validation_failed",
+        "upgrade_required",
+        "internal"
+      ]
+    },
+    "message": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "retryable": { "type": "boolean" },
+    "expectedRevision": { "$ref": "common.schema.json#/$defs/revision" },
+    "actualRevision": { "$ref": "common.schema.json#/$defs/revision" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "code": { "const": "stale_revision" } } },
+      "then": { "required": ["expectedRevision", "actualRevision"] }
+    }
+  ]
+}

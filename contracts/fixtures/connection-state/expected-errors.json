@@ -1,0 +1,7 @@
+{
+  "$comment": "The JSON path at which each invalid fixture must fail. Every implementation reports an error at this path.",
+  "generic-error-state.json": "/state",
+  "ready-without-project.json": "/",
+  "unauthorized-without-error.json": "/",
+  "upgrade-without-required-version.json": "/"
+}

@@ -1,0 +1,19 @@
+{
+  "id": "chk_01JD3Y8N5Q4W2X7K9M6P0R1S2Y",
+  "projectId": "prj_01JD3Y8N5Q4W2X7K9M6P0R1S2T",
+  "revision": "a0b1c2d3e4f5061728394a5b6c7d8e9f00112233",
+  "parentRevision": "9f1c2b3a4d5e6f708192a3b4c5d6e7f8091a2b3c",
+  "summary": {
+    "filesChanged": 2,
+    "insertions": 40,
+    "deletions": 3,
+    "description": "Extension search field"
+  },
+  "validation": {
+    "revision": "9f1c2b3a4d5e6f708192a3b4c5d6e7f8091a2b3c",
+    "status": "passed",
+    "checkedAt": "2026-10-20T09:00:00Z"
+  },
+  "createdBy": "3f2b1c4d-5e6f-4a1b-8c9d-0e1f2a3b4c5d",
+  "createdAt": "2026-10-20T09:00:00Z"
+}

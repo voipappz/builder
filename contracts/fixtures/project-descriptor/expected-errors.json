@@ -1,0 +1,17 @@
+{
+  "$comment": "The JSON path at which each invalid fixture must fail. Every implementation reports an error at this path.",
+  "admin-preview-as-user.json": "/previews/admin/role",
+  "jwt-as-credential-ref.json": "/api/credentialRef",
+  "placeholder-revision.json": "/workspace/templateRevision",
+  "plain-http-remote-api.json": "/api/baseUrl",
+  "remote-vite-url.json": "/vite/url",
+  "shared-preview-session.json": "/previews/user/sessionPolicy",
+  "token-field.json": "/api/token",
+  "wrong-schema-version.json": "/schemaVersion",
+  "credential-in-source-url.json": "/workspace/source",
+  "token-in-source-query.json": "/workspace/source",
+  "ssh-user-in-source.json": "/workspace/source",
+  "plain-http-remote-chat-client.json": "/chatClient/url",
+  "chat-client-with-path.json": "/chatClient/url",
+  "chat-client-extra-field.json": "/chatClient/script"
+}

@@ -1,0 +1,6 @@
+{
+  "$comment": "The JSON path at which each invalid fixture must fail. Every implementation reports an error at this path.",
+  "bad-id.json": "/id",
+  "local-path-stored.json": "/localPath",
+  "escaped-pointer-property.json": "/a~1b~0c"
+}

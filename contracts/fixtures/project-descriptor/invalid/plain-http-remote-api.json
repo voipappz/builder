@@ -1,0 +1,35 @@
+{
+  "$comment": "Design fixture for the planned installer/parser. No parser accepts it yet. Contains no credentials.",
+  "schemaVersion": 1,
+  "name": "My VoipAppz PBX",
+  "workspace": {
+    "source": "../app",
+    "isolation": "managed-copy",
+    "templateRevision": "77bb5d3a1c9e4f0b8d2a6c5e3f1b0a9d8c7e6f50"
+  },
+  "api": {
+    "baseUrl": "http://switch.voipappz.io",
+    "credentialRef": "voipappz-builder/account",
+    "platformMcpPath": "/api/mcp",
+    "documentationMcpPath": "/tasks/mcp"
+  },
+  "vite": {
+    "mode": "managed",
+    "url": "http://localhost:3000",
+    "mcpPath": "/__voipappz/mcp"
+  },
+  "previews": {
+    "admin": {
+      "role": "account",
+      "sessionPolicy": "isolated"
+    },
+    "user": {
+      "role": "user",
+      "sessionPolicy": "isolated"
+    }
+  },
+  "rubyDevelopmentMcp": {
+    "enabled": false,
+    "url": "http://localhost:5055/__dev/mcp"
+  }
+}

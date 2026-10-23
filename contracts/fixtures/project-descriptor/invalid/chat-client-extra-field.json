@@ -1,0 +1,36 @@
+{
+  "$comment": "chatClient holds only url.",
+  "schemaVersion": 1,
+  "name": "My VoipAppz PBX",
+  "workspace": {
+    "source": "../app",
+    "isolation": "managed-copy",
+    "templateRevision": "77bb5d3a1c9e4f0b8d2a6c5e3f1b0a9d8c7e6f50"
+  },
+  "api": {
+    "baseUrl": "http://localhost:9292",
+    "credentialRef": "voipappz-builder/account",
+    "platformMcpPath": "/api/mcp",
+    "documentationMcpPath": "/tasks/mcp"
+  },
+  "chatClient": {
+    "url": "https://switch.voipappz.io",
+    "script": "/builder/client.js"
+  },
+  "vite": {
+    "mode": "attached",
+    "url": "http://localhost:3000",
+    "mcpPath": "/__voipappz/mcp"
+  },
+  "previews": {
+    "admin": {
+      "role": "account",
+      "sessionPolicy": "isolated"
+    },
+    "user": {
+      "role": "user",
+      "sessionPolicy": "isolated"
+    }
+  },
+  "projectId": "prj_01JD3Y8N5Q4W2X7K9M6P0R1S2T"
+}

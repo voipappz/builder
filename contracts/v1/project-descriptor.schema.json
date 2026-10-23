@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.voipappz.io/builder/v1/project-descriptor.schema.json",
+  "title": "Local project descriptor",
+  "description": "The file Builder keeps next to a customer project. It must never hold a secret: credentials live in the OS credential store and are named by credentialRef only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "name",
+    "workspace",
+    "api",
+    "vite",
+    "previews"
+  ],
+  "properties": {
+    "$comment": {
+      "type": "string"
+    },
+    "schemaVersion": {
+      "$ref": "common.schema.json#/$defs/schemaVersion"
+    },
+    "projectId": {
+      "description": "Assigned by the API when the project is registered. Absent before that.",
+      "$ref": "common.schema.json#/$defs/projectId"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "isolation",
+        "templateRevision"
+      ],
+      "properties": {
+        "source": {
+          "description": "Where the template checkout comes from: a path on this machine (it may lie outside the workspace, e.g. ../app) or an https repository URL. URLs may not carry user info, a query or a fragment, so no credential can be stored here.",
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "pattern": "^(?![A-Za-z][A-Za-z0-9+.-]*://)(?!.*@)[^\\u0000-\\u001f]+$"
+            },
+            {
+              "type": "string",
+              "maxLength": 1024,
+              "pattern": "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$"
+            }
+          ]
+        },
+        "isolation": {
+          "enum": [
+            "managed-copy",
+            "git-worktree"
+          ]
+        },
+        "templateRevision": {
+          "$ref": "common.schema.json#/$defs/revision"
+        }
+      }
+    },
+    "api": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseUrl",
+        "credentialRef"
+      ],
+      "properties": {
+        "baseUrl": {
+          "description": "HTTPS, or plain HTTP to localhost for development.",
+          "type": "string",
+          "maxLength": 512,
+          "pattern": "^(https://[A-Za-z0-9.-]+(:[0-9]{1,5})?|http://(localhost|127\\.0\\.0\\.1)(:[0-9]{1,5})?)/?$"
+        },
+        "credentialRef": {
+          "description": "Name of an OS credential store entry, not a credential.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._/-]{0,127}$"
+        },
+        "platformMcpPath": {
+          "$ref": "#/$defs/urlPath"
+        },
+        "documentationMcpPath": {
+          "$ref": "#/$defs/urlPath"
+        }
+      }
+    },
+    "chatClient": {
+      "description": "Where the stub page loads the hosted chat client from. Absent means the hosted default. The --client-url flag and VOIPAPPZ_BUILDER_CLIENT_URL override it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url"
+      ],
+      "properties": {
+        "url": {
+          "description": "Origin of the chat client: HTTPS, or plain HTTP to localhost for a local app run. Same rules as api.baseUrl.",
+          "type": "string",
+          "maxLength": 512,
+          "pattern": "^(https://[A-Za-z0-9.-]+(:[0-9]{1,5})?|http://(localhost|127\\.0\\.0\\.1)(:[0-9]{1,5})?)/?$"
+        }
+      }
+    },
+    "vite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "url"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "managed",
+            "attached"
+          ]
+        },
+        "url": {
+          "$ref": "#/$defs/localUrl"
+        },
+        "mcpPath": {
+          "$ref": "#/$defs/urlPath"
+        }
+      }
+    },
+    "previews": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "admin",
+        "user"
+      ],
+      "properties": {
+        "admin": {
+          "$ref": "#/$defs/preview",
+          "properties": {
+            "role": {
+              "const": "account"
+            }
+          }
+        },
+        "user": {
+          "$ref": "#/$defs/preview",
+          "properties": {
+            "role": {
+              "const": "user"
+            }
+          }
+        }
+      }
+    },
+    "rubyDevelopmentMcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "url": {
+          "$ref": "#/$defs/localUrl"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "urlPath": {
+      "type": "string",
+      "pattern": "^/[A-Za-z0-9._~/-]{0,255}$"
+    },
+    "localUrl": {
+      "type": "string",
+      "pattern": "^http://(localhost|127\\.0\\.0\\.1)(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$"
+    },
+    "preview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "sessionPolicy"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "account",
+            "user"
+          ]
+        },
+        "sessionPolicy": {
+          "const": "isolated"
+        }
+      }
+    }
+  }
+}

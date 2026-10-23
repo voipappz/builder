@@ -1,0 +1,13 @@
+{
+  "id": "prj_123",
+  "name": "My VoipAppz PBX",
+  "customerId": "1a2b3c4d-5e6f-4789-9abc-def012345678",
+  "templateRevision": "77bb5d3a1c9e4f0b8d2a6c5e3f1b0a9d8c7e6f50",
+  "draftRevision": "9f1c2b3a4d5e6f708192a3b4c5d6e7f8091a2b3c",
+  "worker": {
+    "status": "online",
+    "lastSeenAt": "2026-10-20T09:00:00Z"
+  },
+  "createdAt": "2026-10-20T09:00:00Z",
+  "updatedAt": "2026-10-20T09:00:00Z"
+}

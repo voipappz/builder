@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# Start, stop or inspect VoipAppz Builder for this user.
+#
+#   voipappz-builder-launch [start]   start (or reopen) Builder and open the browser
+#   voipappz-builder-launch stop      stop Builder and the app dev server it started
+#   voipappz-builder-launch status
+#   voipappz-builder-launch logs
+#
+# Settings come from ~/.config/voipappz-builder/builder.env, written by
+# install/install.sh.
+set -euo pipefail
+
+CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/voipappz-builder/builder.env"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/voipappz-builder"
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+
+[ -f "$CONFIG" ] || { echo "Not installed: $CONFIG is missing (run install/install.sh)" >&2; exit 1; }
+# shellcheck source=/dev/null
+. "$CONFIG"
+PORT="${PORT:-9832}"
+mkdir -p "$STATE"
+chmod 700 "$STATE"
+
+URL_FILE="$STATE/url"
+BUILDER_PID="$STATE/builder.pid"
+APP_PID="$STATE/app.pid"
+
+notify() {
+  echo "$1"
+  command -v notify-send >/dev/null 2>&1 && notify-send "VoipAppz Builder" "$1" || true
+}
+
+running() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
+answers() { curl -s -m 2 -o /dev/null "$1"; }
+
+api_url() {
+  [ -n "${API_URL:-}" ] && { echo "$API_URL"; return; }
+  [ -n "${API_DIR:-}" ] && [ -f "$API_DIR/.env" ] || return 0
+  local port
+  port=$(sed -n 's/^VA_WEB_PORT=//p' "$API_DIR/.env" | tail -1 | tr -d ' \r')
+  [ -n "$port" ] && echo "http://127.0.0.1:$port"
+}
+
+start() {
+  if running "$BUILDER_PID" && [ -f "$URL_FILE" ]; then
+    xdg-open "$(cat "$URL_FILE")" >/dev/null 2>&1 &
+    echo "Builder is already running; opened it again."
+    return
+  fi
+  [ -d "$WORKSPACE" ] || { notify "Workspace not found: $WORKSPACE"; exit 1; }
+
+  local api
+  api=$(api_url || true)
+
+  # The workspace's own .env points the app's API proxy at the same API the
+  # agent uses. Created once; an existing .env is never changed.
+  if [ -n "$api" ] && [ ! -f "$WORKSPACE/.env" ]; then
+    printf 'VITE_API_BASE_URL=%s\n' "$api" > "$WORKSPACE/.env"
+  fi
+
+  if [ "${START_APP:-1}" = "1" ] && ! answers "$CLIENT_URL"; then
+    [ -e "$WORKSPACE/node_modules" ] || { notify "No node_modules in $WORKSPACE (npm install, or link ../app/node_modules)"; exit 1; }
+    echo "Starting the app dev server in $WORKSPACE ..."
+    # The app's `npm run dev` serves on port 3000, which CLIENT_URL must name.
+    (cd "$WORKSPACE" && setsid npm run dev > "$STATE/app.log" 2>&1 & echo $! > "$APP_PID")
+    for _ in $(seq 1 60); do answers "$CLIENT_URL" && break; sleep 1; done
+    answers "$CLIENT_URL" || { notify "The app dev server did not start; see $STATE/app.log"; exit 1; }
+  fi
+
+  local args=(--workspace "$WORKSPACE" --client-url "$CLIENT_URL" --preview-url "${PREVIEW_URL:-$CLIENT_URL}"
+              --port "$PORT" --url-file "$URL_FILE" --open)
+  if [ -n "$api" ] && answers "$api/health"; then
+    args+=(--api-url "$api")
+    if [ -z "${VA_MCP_BASIC:-}" ] && [ -x "$API_DIR/bin/dev-status.sh" ]; then
+      VA_MCP_BASIC=$(cd "$API_DIR" && MCP_AUTH=1 bin/dev-status.sh 2>/dev/null) || VA_MCP_BASIC=""
+      export VA_MCP_BASIC
+    fi
+  fi
+
+  setsid voipappz-builder "${args[@]}" > "$STATE/builder.log" 2>&1 &
+  echo $! > "$BUILDER_PID"
+  for _ in $(seq 1 20); do [ -f "$URL_FILE" ] && break; sleep 0.5; done
+  if [ -f "$URL_FILE" ]; then
+    echo "Builder is running. Logs: $STATE/builder.log"
+  else
+    notify "Builder did not start; see $STATE/builder.log"
+    exit 1
+  fi
+}
+
+stop() {
+  if running "$BUILDER_PID"; then
+    kill -TERM "$(cat "$BUILDER_PID")"
+    for _ in $(seq 1 20); do running "$BUILDER_PID" || break; sleep 0.25; done
+    echo "Builder stopped."
+  fi
+  if running "$APP_PID"; then
+    # setsid made the dev server a process group leader: stop the whole group.
+    kill -TERM -- "-$(cat "$APP_PID")" 2>/dev/null || true
+    echo "App dev server stopped."
+  fi
+  rm -f "$BUILDER_PID" "$APP_PID" "$URL_FILE"
+}
+
+status() {
+  running "$BUILDER_PID" && echo "Builder: running (pid $(cat "$BUILDER_PID"))" || echo "Builder: stopped"
+  running "$APP_PID" && echo "App dev server: running (pid $(cat "$APP_PID"))" \
+    || { answers "$CLIENT_URL" && echo "App dev server: answering at $CLIENT_URL (not started by Builder)" || echo "App dev server: not answering at $CLIENT_URL"; }
+  local api; api=$(api_url || true)
+  [ -n "$api" ] && { answers "$api/health" && echo "API: answering at $api" || echo "API: not answering at $api (make dev in $API_DIR)"; }
+  echo "Workspace: $WORKSPACE"
+}
+
+case "${1:-start}" in
+  start) start ;;
+  stop) stop ;;
+  status) status ;;
+  logs) tail -n 40 "$STATE/builder.log" "$STATE/app.log" 2>/dev/null ;;
+  *) echo "usage: $(basename "$0") [start|stop|status|logs]" >&2; exit 2 ;;
+esac

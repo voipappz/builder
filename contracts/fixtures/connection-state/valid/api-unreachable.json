@@ -1,0 +1,10 @@
+{
+  "state": "api_unreachable",
+  "checkedAt": "2026-10-20T09:00:00Z",
+  "apiBaseUrl": "https://switch.voipappz.io",
+  "error": {
+    "code": "timeout",
+    "message": "No response from the API within 10 seconds.",
+    "retryable": true
+  }
+}

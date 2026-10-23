@@ -1,0 +1,6 @@
+{
+  "$comment": "The JSON path at which each invalid fixture must fail. Every implementation reports an error at this path.",
+  "missing-retryable.json": "/",
+  "stale-without-revisions.json": "/",
+  "unknown-code.json": "/code"
+}
