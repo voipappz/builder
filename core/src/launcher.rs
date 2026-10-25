@@ -26,9 +26,92 @@ pub const SETUP_STEPS: &[(&str, &str)] = &[
     ("packages", "App packages"),
     ("app", "App dev server"),
     ("api", "API connection"),
+    ("agent", "Coding agent"),
     ("server", "Builder connection"),
 ];
 pub const STEP_PREFIX: &str = "@step ";
+
+/// The ACP adapter for Claude Code, installed by Builder into its own folder
+/// so the Claude binary for this computer is known to be there and its
+/// sign-in can be checked, instead of trusting npx's cache.
+pub const ADAPTER_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp@0.94.0";
+
+/// Where Builder installs the adapter: `<state dir>/agent`.
+pub fn agent_dir() -> PathBuf {
+    state_dir().join("agent")
+}
+
+/// The npm package holding Claude Code's native binary for this computer,
+/// for example `claude-agent-sdk-win32-x64`.
+pub fn claude_platform_package() -> String {
+    let os = match std::env::consts::OS { "windows" => "win32", "macos" => "darwin", other => other };
+    let arch = match std::env::consts::ARCH { "x86_64" => "x64", "aarch64" => "arm64", other => other };
+    format!("claude-agent-sdk-{os}-{arch}")
+}
+
+/// Claude Code's binary inside Builder's adapter install.
+pub fn claude_binary() -> PathBuf {
+    let name = if cfg!(windows) { "claude.exe" } else { "claude" };
+    agent_dir().join("node_modules/@anthropic-ai").join(claude_platform_package()).join(name)
+}
+
+fn adapter_entry() -> PathBuf {
+    agent_dir().join("node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js")
+}
+
+/// The shell command that starts the installed adapter.
+pub fn agent_command_for(entry: &Path) -> String {
+    format!("node \"{}\"", entry.display())
+}
+
+/// Install the adapter (once) and check that Claude is signed in on this
+/// computer. Returns the agent command for the server.
+async fn ensure_agent(
+    settings: &Settings,
+    cwd: &Path,
+    env: &HashMap<String, String>,
+    progress: &impl Fn(&str),
+) -> Result<String, String> {
+    progress("@step agent");
+    if settings.agent_command != DEFAULT_AGENT_COMMAND {
+        progress(&format!("Using the agent command from settings: {}", settings.agent_command));
+        return Ok(settings.agent_command.clone());
+    }
+    let dir = agent_dir();
+    let (entry, binary) = (adapter_entry(), claude_binary());
+    if !entry.is_file() || !binary.is_file() {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+        let prefix = dir.to_string_lossy().into_owned();
+        progress(&format!("Installing the coding agent ({ADAPTER_PACKAGE}) into {}…", dir.display()));
+        let args = ["install", "--prefix", &prefix, "--no-audit", "--no-fund", "--omit=dev", ADAPTER_PACKAGE];
+        let install = || run("npm", &args, &dir, env);
+        if let Err(first) = report_progress("Installing the coding agent; the first time downloads about 150 MB", progress, install()).await {
+            progress(&format!("The first install attempt failed; retrying once. {}", first.lines().next().unwrap_or_default()));
+            report_progress("Installing the coding agent, second attempt", progress, install()).await
+                .map_err(|second| format!("{second}\n\nFirst attempt: {first}"))?;
+        }
+        if !binary.is_file() {
+            return Err(format!(
+                "The coding agent was installed but Claude's binary for this computer ({}) is missing at {}. \
+                 This happens when the disk is full during installation: free some space and restart Builder.",
+                claude_platform_package(), binary.display()));
+        }
+    }
+    progress(&format!("Coding agent: {}", entry.display()));
+    let status = run(&binary.to_string_lossy(), &["auth", "status"], cwd, env).await
+        .map_err(|e| format!("Claude could not report its sign-in state: {e}"))?;
+    let logged_in = serde_json::from_str::<serde_json::Value>(&status).ok()
+        .and_then(|v| v.get("loggedIn").and_then(|b| b.as_bool()))
+        .unwrap_or(false);
+    if !logged_in {
+        return Err(format!(
+            "Claude is not signed in on this computer, so the coding agent cannot run. \
+             Use \"Sign in to Claude\" in the setup window (or run: {} auth login), then restart Builder.",
+            binary.display()));
+    }
+    progress("Claude is signed in; the coding agent is ready.");
+    Ok(agent_command_for(&entry))
+}
 
 pub fn step_label(id: &str) -> Option<&'static str> {
     SETUP_STEPS.iter().find(|(step, _)| *step == id).map(|(_, label)| *label)
@@ -739,6 +822,7 @@ pub async fn start_with_api_credential(settings: &Settings, basic: Option<String
     };
 
     progress(&api_note);
+    let agent_command = ensure_agent(settings, &workspace, &env, &progress).await?;
     progress("@step server");
     progress("Starting Builder's local connection…");
 
@@ -752,7 +836,7 @@ pub async fn start_with_api_credential(settings: &Settings, basic: Option<String
         secret: BuilderConfig::new_secret(),
         workspace: workspace.clone(),
         client_url,
-        agent_command: settings.agent_command.clone(),
+        agent_command,
         agent_env: env.into_iter().filter(|(k, _)| k != "VA_MCP_BASIC").collect(),
         mcp_servers: Vec::new(),
         api_mcp,
@@ -916,6 +1000,16 @@ mod tests {
         assert_eq!(settings.api_url.as_deref(), Some("https://switch.voipappz.io"));
         assert!(settings.api_dir.is_none());
         assert!(settings.workspace.is_none());
+    }
+
+    #[test]
+    fn agent_paths_follow_the_platform() {
+        let package = claude_platform_package();
+        assert!(package.starts_with("claude-agent-sdk-"), "{package}");
+        assert!(!package.contains("x86_64") && !package.contains("windows") && !package.contains("macos"), "{package}");
+        assert!(claude_binary().starts_with(agent_dir()));
+        let command = agent_command_for(Path::new("/state/agent/node_modules/x/dist/index.js"));
+        assert_eq!(command, "node \"/state/agent/node_modules/x/dist/index.js\"");
     }
 
     #[test]

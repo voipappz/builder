@@ -49,6 +49,8 @@
   <header><span class="brand">VoipAppz Builder</span><span id="timer">Starting…</span></header>
   <h1 id="heading">Getting things ready</h1>
   <p id="status" role="status">Connecting to Builder’s setup progress…</p>
+  <p id="actions" hidden><button type="button" id="claude-login">Sign in to Claude</button> <button type="button" id="restart">Restart Builder</button></p>
+  <p id="action-note" class="hint" hidden></p>
   <form id="onboarding">
     <fieldset id="fields">
       <legend>1. Your React app</legend>
@@ -154,6 +156,7 @@
         document.getElementById('heading').textContent = state.status === 'configure' ? 'Connect your app and API' : state.status === 'failed' ? 'Setup needs attention' : state.status === 'ready' ? 'Builder is ready' : 'Setting up Builder';
         document.getElementById('status').textContent = state.status === 'working' ? 'Step ' + (Math.max(0, state.steps.findIndex(([id]) => id === state.step)) + 1) + ' of ' + state.steps.length : (state.lines.at(-1) || 'Starting…');
         renderWizard(state);
+        document.getElementById('actions').hidden = state.status !== 'failed';
         const history = document.getElementById('history');
         const text = state.lines.join('\n');
         if (history.textContent !== text) {
@@ -169,6 +172,16 @@
         document.getElementById('status').textContent = 'Could not read progress. Use View Logs in the Builder tray menu. ' + error;
       } finally { setTimeout(refresh, 750); }
     }
+    const actionNote = document.getElementById('action-note');
+    document.getElementById('claude-login').onclick = async () => {
+      actionNote.hidden = false;
+      try { actionNote.textContent = await invoke('claude_login'); }
+      catch (error) { actionNote.textContent = String(error); }
+    };
+    document.getElementById('restart').onclick = async () => {
+      actionNote.hidden = false; actionNote.textContent = 'Restarting Builder…';
+      try { await invoke('restart_builder'); } catch (error) { actionNote.textContent = String(error); }
+    };
     document.getElementById('copy').onclick = async () => {
       try { await navigator.clipboard.writeText(details); document.getElementById('copy').textContent = 'Copied'; }
       catch { document.getElementById('copy').textContent = 'Select and copy the details above'; }

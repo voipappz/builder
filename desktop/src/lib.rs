@@ -53,6 +53,39 @@ async fn onboarding_start(app: AppHandle, app_repo: String, api_url: String, api
     Ok(())
 }
 
+/// Open a console window running Claude's sign-in (it needs a terminal and a
+/// browser), using the binary Builder installed with the coding agent.
+#[tauri::command]
+fn claude_login() -> Result<String, String> {
+    let binary = launcher::claude_binary();
+    if !binary.is_file() {
+        return Err("The coding agent is not installed yet. Start setup first; sign-in comes after the agent is installed.".into());
+    }
+    let mut command = if cfg!(target_os = "windows") {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/c", "start", "Claude sign-in for VoipAppz Builder", "cmd", "/k"]).arg(&binary).args(["auth", "login"]);
+        c
+    } else if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("osascript");
+        c.arg("-e").arg(format!("tell application \"Terminal\" to do script \"{} auth login\"", binary.display()));
+        c
+    } else {
+        let terminal = ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"].into_iter()
+            .find(|t| which::which(t).is_ok()).ok_or("No terminal program found. Run in a terminal: claude auth login")?;
+        let mut c = std::process::Command::new(terminal);
+        if terminal == "gnome-terminal" { c.arg("--"); } else { c.arg("-e"); }
+        c.arg(&binary).args(["auth", "login"]);
+        c
+    };
+    command.spawn().map_err(|e| format!("Could not open a console for sign-in: {e}"))?;
+    Ok("A console window opened. Finish signing in there (a browser tab opens), then choose Restart Builder.".into())
+}
+
+#[tauri::command]
+async fn restart_builder(app: AppHandle) {
+    tauri::async_runtime::spawn(restart(app));
+}
+
 fn show_onboarding(app: &AppHandle) {
     show_startup(app);
     progress(app, "Connect your React app project and the API to get started.", "configure");
@@ -274,7 +307,7 @@ pub fn run() {
     let _log_guard = init_logging();
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![startup_progress, onboarding_info, onboarding_folder, onboarding_check, onboarding_start])
+        .invoke_handler(tauri::generate_handler![startup_progress, onboarding_info, onboarding_folder, onboarding_check, onboarding_start, claude_login, restart_builder])
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tauri::async_runtime::spawn(open_page(app.clone()));
         }))
