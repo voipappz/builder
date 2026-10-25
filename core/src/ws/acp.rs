@@ -1952,7 +1952,7 @@ async fn start_acp_process(process_state: Arc<ProcessState>, state: AcpChannelSt
     tokio::spawn(async move {
         let mut lines = stderr.lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            debug!("Process stderr: {}", line);
+            info!("agent stderr: {}", line);
             // Buffer if init hasn't completed yet
             if !process_state_stderr.init_state.is_complete().await {
                 process_state_stderr.stderr_buffer.write().await.push(line);
