@@ -191,7 +191,18 @@ pub fn api_credential(email: &str, password: &str) -> Result<String, String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(format!("{}:{password}", email.trim())))
 }
 
+/// A WSL (`\\wsl.localhost\…`, `\\wsl$\…`) or other network share path. On
+/// Windows, `npm.cmd` runs through cmd.exe, which cannot use such a folder
+/// as its working directory, so setup must refuse it up front.
+pub fn is_network_path(path: &str) -> bool {
+    let path = path.trim();
+    path.starts_with("\\\\") || path.starts_with("//")
+}
+
 pub fn onboarding_settings(mut settings: Settings, app_repo: &str, api_url: &str, api_dir: &str) -> Result<Settings, String> {
+    if is_network_path(app_repo) {
+        return Err("This folder is on WSL or a network share. Choose a checkout on a local drive (for example C:\\Users\\you\\voipappz-app), or run Builder inside WSL.".into());
+    }
     let repo = PathBuf::from(app_repo.trim());
     if !repo.join("package.json").is_file() || !repo.join("src/builder-client/main.jsx").is_file() {
         return Err("Choose the React app folder containing package.json and src/builder-client/main.jsx.".into());
@@ -201,7 +212,7 @@ pub fn onboarding_settings(mut settings: Settings, app_repo: &str, api_url: &str
     }
     let api_dir = (!api_dir.trim().is_empty()).then(|| PathBuf::from(api_dir.trim()));
     let url = onboarding_api_url(api_url, api_dir.as_deref())?;
-    settings.app_repo = Some(std::fs::canonicalize(repo).map_err(|e| e.to_string())?);
+    settings.app_repo = Some(dunce::canonicalize(repo).map_err(|e| e.to_string())?);
     settings.workspace = None;
     settings.api_url = Some(url);
     settings.api_dir = api_dir;
@@ -499,7 +510,7 @@ async fn ensure_workspace(
             run("git", &["worktree", "add", "-b", "builder/work", &path, "origin/main"], repo, env).await?;
         }
     }
-    let workspace = std::fs::canonicalize(&workspace)
+    let workspace = dunce::canonicalize(&workspace)
         .map_err(|e| format!("Workspace {}: {}", workspace.display(), e))?;
     progress(&format!("Workspace: {}", workspace.display()));
 
@@ -811,6 +822,17 @@ mod tests {
         assert_eq!(settings.api_url.as_deref(), Some("https://switch.voipappz.io"));
         assert!(settings.api_dir.is_none());
         assert!(settings.workspace.is_none());
+    }
+
+    #[test]
+    fn onboarding_refuses_wsl_and_network_paths() {
+        assert!(is_network_path(r"\\wsl.localhost\Debian\home\nir\voipappz\app"));
+        assert!(is_network_path(r"\\wsl$\Ubuntu\home\nir\app"));
+        assert!(is_network_path(r"\\server\share\app"));
+        assert!(!is_network_path(r"C:\Users\nir\voipappz-app"));
+        assert!(!is_network_path("/home/nir/voipappz/app"));
+        let err = onboarding_settings(Settings::default(), r"\\wsl.localhost\Debian\home\nir\voipappz\app", "https://switch.voipappz.io", "").unwrap_err();
+        assert!(err.contains("WSL"), "{err}");
     }
 
     #[test]

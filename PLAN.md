@@ -17,7 +17,7 @@ it fits together. The rest of this file is the plan and its decisions.
 | Desktop app and installers | Done. Tray app (`desktop/`); `.exe`, `.dmg`, `.deb`, `.AppImage` built by `.github/workflows/installers.yml`; release v0.1.0 (unsigned pre-release) |
 | Linux per-user install | Done. `install/install.sh` and `voipappz-builder-launch` |
 | Contracts | Re-scoped to ACP, merged in the API (pull requests 140 and 152) |
-| Not yet | A full chat turn (the account's Claude quota), React runtime tools, `/dev/mcp` read tools, changes/checkpoint panel, hosted `/builder/client.js`, signing and updates |
+| Not yet | A full chat turn (the account's Claude quota), React runtime tools, `/dev/mcp` read tools, changes/checkpoint panel, hosted `/builder/client.js`, signing and updates. WSL mode for the Windows app: a checkout under `\\wsl.localhost` is refused at onboarding (2026-10-25); running git, npm, the dev server and the agent through `wsl.exe -d <distro> --cd <path>` would need the write-boundary check to map Linux paths to the UNC root |
 
 Decisions recorded 2026-10-17:
 

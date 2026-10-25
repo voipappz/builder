@@ -31,9 +31,13 @@ and has no automatic updates.
 **Before you start**
 
 - Windows 10 or 11, 64-bit, with internet access for the first run.
-- A Git checkout of the VoipAppz React app (`voipappz/app`) on this computer.
-  Builder makes its own worktree next to it, `<app folder>-builder`, on the
-  branch `builder/work`.
+- A Git checkout of the VoipAppz React app (`voipappz/app`) **on a local
+  drive** (for example `C:\Users\you\voipappz-app`). A folder on WSL
+  (`\\wsl.localhost\...`) or a network share does not work: `npm` on Windows
+  cannot run there. To work on a WSL checkout, run the Linux Builder inside
+  WSL instead (see "Run it" below); the Windows browser reaches it on
+  `localhost`. Builder makes its own worktree next to the checkout,
+  `<app folder>-builder`, on the branch `builder/work`.
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and
   signed in (run `claude` once in a terminal). The agent runs on your Claude
   account.
