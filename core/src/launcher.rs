@@ -125,6 +125,32 @@ pub fn valid_origin(url: &str) -> bool {
         && url.path() == "/" && url.query().is_none() && url.fragment().is_none()
 }
 
+/// `preferred` if it can be bound on loopback, else the first free port of
+/// the next twenty. On Windows with WSL in mirrored networking mode a port
+/// can stay unusable after the Linux side closed it, with nothing listed.
+async fn free_port(preferred: u16) -> Option<u16> {
+    for port in preferred..preferred.saturating_add(20) {
+        if tokio::net::TcpListener::bind(("127.0.0.1", port)).await.is_ok() {
+            return Some(port);
+        }
+    }
+    None
+}
+
+/// The port of `http://host[:port]`, if any.
+pub fn url_port(url: &str) -> Option<u16> {
+    reqwest::Url::parse(url).ok().and_then(|u| u.port())
+}
+
+/// `url` with its port set to `port`.
+pub fn with_port(url: &str, port: u16) -> String {
+    let Ok(mut parsed) = reqwest::Url::parse(url) else { return url.to_string() };
+    if parsed.set_port(Some(port)).is_err() {
+        return url.to_string();
+    }
+    parsed.to_string().trim_end_matches('/').to_string()
+}
+
 async fn answers(url: &str) -> bool {
     let client = match reqwest::Client::builder().timeout(Duration::from_secs(2)).build() {
         Ok(c) => c,
@@ -272,7 +298,7 @@ impl Running {
     }
 }
 
-fn start_dev_server(workspace: &Path, env: HashMap<String, String>) -> Result<ChildProcess, String> {
+fn start_dev_server(workspace: &Path, env: HashMap<String, String>, port: u16) -> Result<ChildProcess, String> {
     if !workspace.join("node_modules").exists() {
         return Err(format!(
             "{} has no node_modules; run npm install there first",
@@ -283,7 +309,10 @@ fn start_dev_server(workspace: &Path, env: HashMap<String, String>) -> Result<Ch
     std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
     let log = std::fs::File::create(log_dir.join("app.log")).map_err(|e| e.to_string())?;
     let log_err = log.try_clone().map_err(|e| e.to_string())?;
-    let mut command = create_shell_command("npm run dev", env, &workspace.to_string_lossy(), None);
+    // The app's dev script fixes a port; the later --port wins, and
+    // --strictPort stops Vite from silently moving to another one.
+    let script = format!("npm run dev -- --port {port} --strictPort");
+    let mut command = create_shell_command(&script, env, &workspace.to_string_lossy(), None);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
@@ -552,7 +581,9 @@ async fn ensure_workspace(
     progress(&format!("Workspace: {}", workspace.display()));
 
     progress("@step packages");
-    if !workspace.join("node_modules").exists() {
+    // npm writes node_modules/.package-lock.json last; without it an earlier
+    // install was cut short and must run again.
+    if !workspace.join("node_modules/.package-lock.json").is_file() {
         let shared = app_repo.map(|r| r.join("node_modules")).filter(|p| p.is_dir());
         let same_lock = app_repo.is_some_and(|r| {
             std::fs::read(r.join("package-lock.json")).ok() == std::fs::read(workspace.join("package-lock.json")).ok()
@@ -639,8 +670,8 @@ pub async fn start_with_api_credential(settings: &Settings, basic: Option<String
             let _ = std::fs::write(&dotenv, format!("VITE_API_BASE_URL={}\n", api));
         }
     }
-    let client_url = settings.client_url.trim_end_matches('/').to_string();
-    let preview_url = settings.preview_url.clone().unwrap_or_else(|| client_url.clone());
+    let mut client_url = settings.client_url.trim_end_matches('/').to_string();
+    let mut preview_url = settings.preview_url.clone().unwrap_or_else(|| client_url.clone());
     for (name, url) in [("client_url", &client_url), ("preview_url", &preview_url)] {
         if !valid_origin(url) {
             return Err(format!("{} must be an https origin or http://localhost[:port], got {}", name, url));
@@ -649,9 +680,20 @@ pub async fn start_with_api_credential(settings: &Settings, basic: Option<String
 
     let mut dev_server = None;
     progress("@step app");
-    if settings.start_app && !answers(&client_url).await {
-        progress("Starting the app dev server (npm run dev)…");
-        dev_server = Some(start_dev_server(&workspace, env.clone())?);
+    let app_answers = settings.start_app && answers(&client_url).await;
+    if app_answers {
+        progress(&format!("An app already answers at {client_url}; using it. If that is not this workspace's dev server (for example one running in WSL), stop it and restart Builder."));
+    }
+    if settings.start_app && !app_answers {
+        let wanted = url_port(&client_url).unwrap_or(3000);
+        let port = free_port(wanted).await.ok_or_else(|| format!("No free port between {wanted} and {} for the app dev server.", wanted + 19))?;
+        if port != wanted {
+            progress(&format!("Port {wanted} cannot be used on this computer (in use, or held by the system after WSL used it); the app will run on port {port}."));
+            if preview_url == client_url { preview_url = with_port(&preview_url, port); }
+            client_url = with_port(&client_url, port);
+        }
+        progress(&format!("Starting the app dev server (npm run dev, port {port})…"));
+        dev_server = Some(start_dev_server(&workspace, env.clone(), port)?);
         let deadline = tokio::time::Instant::now() + DEV_SERVER_WAIT;
         let mut next_update = tokio::time::Instant::now();
         while !answers(&client_url).await {
@@ -700,8 +742,13 @@ pub async fn start_with_api_credential(settings: &Settings, basic: Option<String
     progress("@step server");
     progress("Starting Builder's local connection…");
 
+    let port = free_port(settings.port).await
+        .ok_or_else(|| format!("No free port between {} and {} for Builder.", settings.port, settings.port + 19))?;
+    if port != settings.port {
+        progress(&format!("Port {} is busy (another Builder, possibly running in WSL); using port {port}.", settings.port));
+    }
     let config = BuilderConfig {
-        port: settings.port,
+        port,
         secret: BuilderConfig::new_secret(),
         workspace: workspace.clone(),
         client_url,
@@ -869,6 +916,24 @@ mod tests {
         assert_eq!(settings.api_url.as_deref(), Some("https://switch.voipappz.io"));
         assert!(settings.api_dir.is_none());
         assert!(settings.workspace.is_none());
+    }
+
+    #[test]
+    fn urls_change_port() {
+        assert_eq!(url_port("http://localhost:3000"), Some(3000));
+        assert_eq!(url_port("https://switch.voipappz.io"), None);
+        assert_eq!(with_port("http://localhost:3000", 3001), "http://localhost:3001");
+        assert_eq!(with_port("http://localhost", 3001), "http://localhost:3001");
+        assert_eq!(with_port("http://admin.localhost:3000/", 3005), "http://admin.localhost:3005");
+    }
+
+    #[tokio::test]
+    async fn free_port_skips_a_bound_port() {
+        let held = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let taken = held.local_addr().unwrap().port();
+        let port = free_port(taken).await.unwrap();
+        assert_ne!(port, taken);
+        assert!(port > taken && port < taken + 20);
     }
 
     #[test]
