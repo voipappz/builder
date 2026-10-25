@@ -28,3 +28,4 @@ cert.pem
 
 target/
 desktop/gen/
+.playwright-cli/

@@ -17,6 +17,45 @@ use tracing::{error, info};
 struct AppState {
     running: Mutex<Option<Running>>,
     startup: std::sync::Mutex<StartupProgress>,
+    api_login: std::sync::Mutex<Option<(String, String)>>,
+}
+
+#[tauri::command]
+fn onboarding_info() -> Result<Settings, String> { Settings::load() }
+
+#[tauri::command]
+async fn onboarding_folder(app: AppHandle, api: bool) -> Option<String> {
+    pick_workspace(&app, if api { "Choose the voipappz-api checkout" } else { "Choose the React app Git checkout (voipappz/app)" })
+        .await.map(|path| path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+async fn onboarding_check(api_url: String, api_dir: String, email: String, password: String) -> Result<String, String> {
+    let dir = (!api_dir.trim().is_empty()).then(|| PathBuf::from(api_dir.trim()));
+    let url = launcher::onboarding_api_url(&api_url, dir.as_deref())?;
+    launcher::check_api_connection(&url, &email, &password).await
+}
+
+#[tauri::command]
+async fn onboarding_start(app: AppHandle, app_repo: String, api_url: String, api_dir: String, email: String, password: String) -> Result<(), String> {
+    let settings = launcher::onboarding_settings(Settings::load()?, &app_repo, &api_url, &api_dir)?;
+    let url = settings.api_url.clone().ok_or("Choose an API address.")?;
+    launcher::check_api_connection(&url, &email, &password).await?;
+    let basic = if email.is_empty() && password.is_empty() { None }
+        else { Some((url, launcher::api_credential(&email, &password)?)) };
+    {
+        let state = app.state::<AppState>();
+        let _guard = state.running.try_lock().map_err(|_| "Setup is already running. Follow its progress below.")?;
+        settings.save()?;
+        *state.api_login.lock().unwrap_or_else(|e| e.into_inner()) = basic;
+    }
+    tauri::async_runtime::spawn(restart(app));
+    Ok(())
+}
+
+fn show_onboarding(app: &AppHandle) {
+    show_startup(app);
+    progress(app, "Connect your React app project and the API to get started.", "configure");
 }
 
 #[derive(Clone, Default, serde::Serialize)]
@@ -53,7 +92,7 @@ fn show_startup(app: &AppHandle) {
         let _ = window.set_focus();
     } else if let Err(error) = tauri::WebviewWindowBuilder::new(app, "startup", tauri::WebviewUrl::App("index.html".into()))
         .title("VoipAppz Builder — Startup")
-        .inner_size(720.0, 560.0)
+        .inner_size(780.0, 800.0)
         .min_inner_size(420.0, 360.0)
         .build() {
         error!("Could not show setup progress: {}", error);
@@ -108,11 +147,11 @@ fn show_error(app: &AppHandle, message: impl Into<String>) {
         .show(|_| {});
 }
 
-async fn pick_workspace(app: &AppHandle) -> Option<PathBuf> {
+async fn pick_workspace(app: &AppHandle, title: &str) -> Option<PathBuf> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .set_title("Choose the VoipAppz app repository (../app); Builder makes its own worktree of it")
+        .set_title(title)
         .pick_folder(move |folder| {
             let _ = tx.send(folder.and_then(|f| f.into_path().ok()));
         });
@@ -134,29 +173,17 @@ async fn restart(app: AppHandle) {
         current.stop().await;
     }
 
-    let mut settings = match Settings::load() {
+    let settings = match Settings::load() {
         Ok(s) => s,
         Err(e) => return show_error(&app, format!("Settings could not be read: {}", e)),
     };
     if settings.workspace.is_none() && settings.app_repo.is_none() {
-        progress(&app, "Choose the app repository in the folder selection dialog.", "working");
-        match pick_workspace(&app).await {
-            Some(folder) => {
-                set_app_repo(&mut settings, folder);
-                if let Err(e) = settings.save() {
-                    return show_error(&app, format!("Settings could not be saved: {}", e));
-                }
-            }
-            None => {
-                return show_error(
-                    &app,
-                    "No app repository chosen. Use \"Choose App Repository…\" in the VoipAppz Builder menu.",
-                )
-            }
-        }
+        progress(&app, "Choose your React app folder and API address above.", "configure");
+        return;
     }
-
-    match launcher::start(&settings, |line| progress(&app, line, "working")).await {
+    let basic = state.api_login.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+        .filter(|(url, _)| settings.api_url.as_ref() == Some(url)).map(|(_, basic)| basic.clone());
+    match launcher::start_with_api_credential(&settings, basic, |line| progress(&app, line, "working")).await {
         Ok(started) => {
             info!("Builder is running; {}", started.api_note);
             progress(&app, "Builder is ready. Opening your browser. You can close this setup window.", "ready");
@@ -188,35 +215,11 @@ async fn open_page(app: AppHandle) {
     }
 }
 
-/// Use `folder` as the app repository, Builder's own worktree of it as the
-/// workspace, and a sibling voipappz-api checkout for the API, if present.
-fn set_app_repo(settings: &mut Settings, folder: PathBuf) {
-    if settings.api_dir.is_none() {
-        let api = folder.with_file_name("voipappz-api");
-        if api.join("bin/dev-status.sh").exists() {
-            settings.api_dir = Some(api);
-        }
-    }
-    settings.app_repo = Some(folder);
-    settings.workspace = None;
-}
-
-async fn choose_workspace(app: AppHandle) {
-    if let Some(folder) = pick_workspace(&app).await {
-        let mut settings = Settings::load().unwrap_or_default();
-        set_app_repo(&mut settings, folder);
-        if let Err(e) = settings.save() {
-            return show_error(&app, format!("Settings could not be saved: {}", e));
-        }
-        restart(app).await;
-    }
-}
-
 pub fn run() {
     let _log_guard = init_logging();
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![startup_progress])
+        .invoke_handler(tauri::generate_handler![startup_progress, onboarding_info, onboarding_folder, onboarding_check, onboarding_start])
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tauri::async_runtime::spawn(open_page(app.clone()));
         }))
@@ -232,7 +235,7 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let open = MenuItem::with_id(app, "open", "Open VoipAppz Builder", true, None::<&str>)?;
-            let workspace = MenuItem::with_id(app, "workspace", "Choose App Repository…", true, None::<&str>)?;
+            let workspace = MenuItem::with_id(app, "workspace", "Connect App and API…", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let logs = MenuItem::with_id(app, "logs", "View Logs", true, None::<&str>)?;
             let at_login = CheckMenuItem::with_id(
@@ -262,7 +265,7 @@ pub fn run() {
                             tauri::async_runtime::spawn(open_page(app));
                         }
                         "workspace" => {
-                            tauri::async_runtime::spawn(choose_workspace(app));
+                            show_onboarding(&app);
                         }
                         "settings" => {
                             if !Settings::path().exists() {
@@ -300,7 +303,7 @@ pub fn run() {
             }
             tray.build(app)?;
 
-            tauri::async_runtime::spawn(restart(app.handle().clone()));
+            show_onboarding(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())

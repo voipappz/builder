@@ -100,11 +100,11 @@ pub fn state_dir() -> PathBuf {
 
 /// An https origin, or plain http to localhost or 127.0.0.1.
 pub fn valid_origin(url: &str) -> bool {
-    let url = url.trim_end_matches('/');
-    let local = ["http://localhost", "http://127.0.0.1"]
-        .iter()
-        .any(|p| url == *p || url.starts_with(&format!("{}:", p)));
-    (url.starts_with("https://") || local) && url.matches('/').count() == 2
+    let Ok(url) = reqwest::Url::parse(url) else { return false; };
+    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    (url.scheme() == "https" || (url.scheme() == "http" && local))
+        && url.host_str().is_some() && url.username().is_empty() && url.password().is_none()
+        && url.path() == "/" && url.query().is_none() && url.fragment().is_none()
 }
 
 async fn answers(url: &str) -> bool {
@@ -120,18 +120,18 @@ async fn answers(url: &str) -> bool {
 /// tools are off.
 pub async fn api_mcp_server(api_url: &str, basic: Option<&str>) -> Result<ApiMcp, String> {
     let api_url = api_url.trim_end_matches('/');
+    if !valid_origin(api_url) {
+        return Err("Use an HTTPS API address, or HTTP on localhost for a local API.".into());
+    }
     let basic = match basic {
         Some(b) if !b.is_empty() => b,
         _ => return Err("VA_MCP_BASIC is not set (in voipappz-api: make tenant, then MCP_AUTH=1 bin/dev-status.sh)".into()),
     };
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| e.to_string())?;
-    match client.get(format!("{}/health", api_url)).send().await {
-        Ok(r) if r.status().is_success() => {}
-        _ => return Err(format!("{}/health does not answer (in voipappz-api: make dev)", api_url)),
-    }
     let listed = client
         .post(format!("{}/api/mcp", api_url))
         .header("Authorization", format!("Basic {}", basic))
@@ -139,7 +139,12 @@ pub async fn api_mcp_server(api_url: &str, basic: Option<&str>) -> Result<ApiMcp
         .send()
         .await;
     match listed {
-        Ok(r) if r.status().is_success() => {}
+        Ok(r) if r.status().is_success() => {
+            let body: serde_json::Value = r.json().await.map_err(|_| "The API returned an invalid MCP response.".to_string())?;
+            if body.get("error").is_some() || !body.pointer("/result/tools").is_some_and(|v| v.is_array()) {
+                return Err("The API did not return an MCP tools list.".into());
+            }
+        }
         Ok(r) => return Err(format!("{}/api/mcp answered {} for the VA_MCP_BASIC login", api_url, r.status())),
         Err(_) => return Err(format!("{}/api/mcp does not answer", api_url)),
     }
@@ -147,6 +152,72 @@ pub async fn api_mcp_server(api_url: &str, basic: Option<&str>) -> Result<ApiMcp
         url: format!("{}/api/mcp", api_url),
         basic: basic.to_string(),
     })
+}
+
+/// Probe the actual API endpoint: /health can be routed to a separate service.
+pub async fn check_api_connection(api_url: &str, email: &str, password: &str) -> Result<String, String> {
+    let api_url = api_url.trim().trim_end_matches('/');
+    if !valid_origin(api_url) {
+        return Err("Use an HTTPS API address, or HTTP on localhost for a local API.".into());
+    }
+    if !email.is_empty() || !password.is_empty() {
+        let basic = api_credential(email, password)?;
+        api_mcp_server(api_url, Some(&basic)).await?;
+        return Ok("Connected. Your API tools are available read-only. Sign in separately in the app previews.".into());
+    }
+    let response = reqwest::Client::builder().timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none()).build().map_err(|e| e.to_string())?
+        .post(format!("{api_url}/api/mcp"))
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+        .send().await.map_err(|_| "Could not reach the API. Check the address and your internet connection.".to_string())?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED || response.status() == reqwest::StatusCode::FORBIDDEN {
+        return Ok("API is reachable. Sign in in the app previews. Add API credentials below to enable read-only tools for the coding agent.".into());
+    }
+    if !response.status().is_success() {
+        return Err(format!("The API endpoint returned {}. Check the address or try again later.", response.status()));
+    }
+    let body: serde_json::Value = response.json().await.map_err(|_| "This address did not return an MCP response.".to_string())?;
+    if !body.pointer("/result/tools").is_some_and(|v| v.is_array()) {
+        return Err("This address did not return an MCP tools list.".into());
+    }
+    Ok("API is reachable. Sign in in the app previews to use your account.".into())
+}
+
+pub fn api_credential(email: &str, password: &str) -> Result<String, String> {
+    use base64::Engine;
+    if email.trim().is_empty() || password.is_empty() || email.contains(':') {
+        return Err("Enter both your API email and password.".into());
+    }
+    Ok(base64::engine::general_purpose::STANDARD.encode(format!("{}:{password}", email.trim())))
+}
+
+pub fn onboarding_settings(mut settings: Settings, app_repo: &str, api_url: &str, api_dir: &str) -> Result<Settings, String> {
+    let repo = PathBuf::from(app_repo.trim());
+    if !repo.join("package.json").is_file() || !repo.join("src/builder-client/main.jsx").is_file() {
+        return Err("Choose the React app folder containing package.json and src/builder-client/main.jsx.".into());
+    }
+    if !repo.join(".git").exists() {
+        return Err("Choose a Git checkout of voipappz/app. Builder needs Git to create its separate working copy.".into());
+    }
+    let api_dir = (!api_dir.trim().is_empty()).then(|| PathBuf::from(api_dir.trim()));
+    let url = onboarding_api_url(api_url, api_dir.as_deref())?;
+    settings.app_repo = Some(std::fs::canonicalize(repo).map_err(|e| e.to_string())?);
+    settings.workspace = None;
+    settings.api_url = Some(url);
+    settings.api_dir = api_dir;
+    Ok(settings)
+}
+
+pub fn onboarding_api_url(api_url: &str, api_dir: Option<&Path>) -> Result<String, String> {
+    let url = if let Some(dir) = api_dir {
+        api_url_from_dir(dir).ok_or("The API checkout needs a .env containing VA_WEB_PORT. Start it with make dev first.")?
+    } else {
+        api_url.trim().trim_end_matches('/').to_owned()
+    };
+    if !valid_origin(&url) {
+        return Err("Use an HTTPS API address, or HTTP on localhost for a local API.".into());
+    }
+    Ok(url)
 }
 
 /// A running Builder. Dropping it stops the dev server it started.
@@ -365,6 +436,7 @@ async fn ensure_node(
     progress: &impl Fn(&str),
 ) -> Result<(), String> {
     let pin = node_pin(repo);
+    progress("Builder uses Node.js and npm to run your local app preview and install its packages. Missing tools will be set up automatically.");
     progress(&format!("Checking Node.js and npm (required Node version: {pin})…"));
     let version = run("node", &["--version"], repo, env).await.unwrap_or_default();
     let major = version.trim_start_matches('v').split('.').next().and_then(|v| v.parse::<u32>().ok());
@@ -469,6 +541,11 @@ async fn api_login(settings: &Settings, env: &HashMap<String, String>) -> Option
 
 /// Start Builder from settings. `progress` receives short status lines.
 pub async fn start(settings: &Settings, progress: impl Fn(&str)) -> Result<Running, String> {
+    start_with_api_credential(settings, None, progress).await
+}
+
+/// Credentials supplied by onboarding are kept in memory, outside settings and agent environment.
+pub async fn start_with_api_credential(settings: &Settings, basic: Option<String>, progress: impl Fn(&str)) -> Result<Running, String> {
     // A menu-launched app does not get the terminal's PATH (nvm, mise,
     // Homebrew); use what a login shell would have.
     progress("Reading your shell environment…");
@@ -492,6 +569,12 @@ pub async fn start(settings: &Settings, progress: impl Fn(&str)) -> Result<Runni
         .api_url
         .clone()
         .or_else(|| settings.api_dir.as_deref().and_then(api_url_from_dir));
+
+    // Vite gives process environment priority over existing .env files.
+    // The selected mothership must also be used when the worktree has an old .env.
+    if let Some(api) = &api_url {
+        env.insert("VITE_API_BASE_URL".into(), api.clone());
+    }
 
     // The app's API proxy uses the same API as the agent. Written once; an
     // existing .env is never changed.
@@ -543,7 +626,10 @@ pub async fn start(settings: &Settings, progress: impl Fn(&str)) -> Result<Runni
     let api_note = match &api_url {
         None => "API tools off (no api_url or api_dir in settings)".to_string(),
         Some(api_url) if !valid_origin(api_url) => format!("API tools off: invalid api_url {}", api_url),
-        Some(api_url) => match api_mcp_server(api_url, api_login(settings, &env).await.as_deref()).await {
+        Some(api_url) => match api_mcp_server(api_url, match basic {
+            Some(ref value) => Some(value.clone()),
+            None => api_login(settings, &env).await,
+        }.as_deref()).await {
             Ok(api) => {
                 let note = format!("API tools (read-only): {}", api.url);
                 api_mcp = Some(api);
@@ -713,6 +799,28 @@ mod tests {
     }
 
     #[test]
+    fn hosted_onboarding_clears_previous_local_api() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/builder-client")).unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("src/builder-client/main.jsx"), "").unwrap();
+        let mut previous = Settings::default();
+        previous.api_dir = Some(PathBuf::from("old-local-api"));
+        let settings = onboarding_settings(previous, dir.path().to_str().unwrap(), "https://switch.voipappz.io/", "").unwrap();
+        assert_eq!(settings.api_url.as_deref(), Some("https://switch.voipappz.io"));
+        assert!(settings.api_dir.is_none());
+        assert!(settings.workspace.is_none());
+    }
+
+    #[test]
+    fn onboarding_credentials_require_both_fields() {
+        assert!(api_credential("", "password").is_err());
+        assert!(api_credential("person@example.com", "").is_err());
+        assert!(api_credential("person:other", "password").is_err());
+    }
+
+    #[test]
     fn origins() {
         assert!(valid_origin("https://switch.voipappz.io"));
         assert!(valid_origin("http://localhost:3000/"));
@@ -720,5 +828,8 @@ mod tests {
         assert!(!valid_origin("http://switch.voipappz.io"));
         assert!(!valid_origin("https://switch.voipappz.io/builder/client.js"));
         assert!(!valid_origin("http://localhost.evil.example"));
+        assert!(!valid_origin("https://user:password@switch.voipappz.io"));
+        assert!(!valid_origin("https://switch.voipappz.io?token=secret"));
+        assert!(!valid_origin("https://switch.voipappz.io#fragment"));
     }
 }

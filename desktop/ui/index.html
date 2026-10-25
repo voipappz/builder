@@ -16,23 +16,94 @@
     #path { overflow-wrap: anywhere; user-select: all; }
     button { background: #fdae98; border: 2px solid #111; border-radius: 20px; padding: 8px 16px; font: inherit; cursor: pointer; }
     button:focus-visible { outline: 3px solid #111; outline-offset: 3px; }
+    fieldset { border: 2px solid #111; border-radius: 14px; margin: 20px 0; padding: 20px; background: #fff; }
+    legend { font-weight: 800; padding: 0 8px; }
+    label { display: block; font-weight: 600; margin-top: 12px; }
+    input, select { width: 100%; padding: 10px; border: 1.5px solid #555; border-radius: 8px; font: inherit; }
+    .row { display: flex; gap: 8px; align-items: end; }
+    .row input { flex: 1; min-width: 0; }
+    .hint { font-size: 13px; color: #444; }
+    #connection { white-space: pre-wrap; }
+    button:disabled { opacity: .6; cursor: wait; }
   </style>
 </head>
 <body>
   <header><span class="brand">VoipAppz Builder</span><span id="timer">Starting…</span></header>
   <h1 id="heading">Getting things ready</h1>
   <p id="status" role="status">Connecting to Builder’s setup progress…</p>
-  <p>First-time downloads may take several minutes. Progress updates appear below.</p>
+  <form id="onboarding">
+    <fieldset id="fields">
+      <legend>1. Your React app</legend>
+      <p>Choose the local <strong>voipappz/app</strong> project you want to change.
+        Builder creates a separate working copy for the coding agent.</p>
+      <label for="app-repo">React app folder</label>
+      <div class="row"><input id="app-repo" required placeholder="C:\Projects\app"><button type="button" id="browse-app">Browse</button></div>
+      <p class="hint">Use a Git checkout containing package.json. Git must be installed to create the working copy.</p>
+      <h2>2. Your API</h2>
+      <p>The previews connect to this API for account data. The agent can optionally inspect it with read-only tools.</p>
+      <label for="api-url">Hosted API address</label><input id="api-url" type="url" required value="https://switch.voipappz.io">
+      <p class="hint">Use the hosted VoipAppz API. You do not need to install or run voipappz-api locally.</p>
+      <details><summary>Enable API tools for the coding agent (optional)</summary>
+        <label for="api-email">API account email</label><input id="api-email" type="email" autocomplete="username">
+        <label for="api-password">API password</label><input id="api-password" type="password" autocomplete="off">
+        <p class="hint">Used only for this Builder session. Credentials are not saved or passed to the coding agent. Sign in separately in the Admin/User previews. Leave these blank to use previews without agent API tools.</p>
+      </details>
+      <p><button type="button" id="check-api">Check API connection</button></p>
+      <p id="connection" role="status"></p>
+      <button type="submit" id="start">Connect and open Builder</button>
+    </fieldset>
+  </form>
+  <p>Builder runs your app locally so you can preview your changes. Node.js runs
+    the app’s development tools, and npm installs the packages they need.
+    Builder sets these up automatically—you don’t need to install them yourself.</p>
+  <p>The first setup needs an internet connection and may take several minutes.
+    Existing compatible tools are reused. Progress updates appear below.</p>
   <pre id="history" tabindex="0" aria-label="Setup details"></pre>
   <button id="copy" type="button">Copy details</button>
   <footer><p>Full log: <span id="path"></span></p><p>Closing this window keeps Builder running in the system tray.</p></footer>
   <script>
     const started = Date.now();
     let details = '';
+    let submitting = false;
+    const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
+    const connection = document.getElementById('connection');
+    function apiFields() {
+      return { apiUrl: document.getElementById('api-url').value,
+        apiDir: '',
+        email: document.getElementById('api-email').value.trim(), password: document.getElementById('api-password').value };
+    }
+    for (const [button, field, api] of [['browse-app', 'app-repo', false]]) {
+      document.getElementById(button).onclick = async () => {
+        try { const path = await invoke('onboarding_folder', { api }); if (path) document.getElementById(field).value = path; }
+        catch (error) { connection.textContent = String(error); }
+      };
+    }
+    document.getElementById('check-api').onclick = async () => {
+      const button = document.getElementById('check-api'); button.disabled = true;
+      connection.textContent = 'Checking the API endpoint…';
+      try { connection.textContent = await invoke('onboarding_check', apiFields()); }
+      catch (error) { connection.textContent = String(error); }
+      finally { button.disabled = false; }
+    };
+    document.getElementById('onboarding').onsubmit = async (event) => {
+      event.preventDefault(); submitting = true; document.getElementById('fields').disabled = true;
+      connection.textContent = 'Checking your app folder and API connection…';
+      try {
+        await invoke('onboarding_start', {appRepo: document.getElementById('app-repo').value, ...apiFields()});
+        document.getElementById('api-password').value = '';
+        connection.textContent = 'Connection checked. Preparing your workspace…';
+      } catch (error) { connection.textContent = String(error); }
+      finally { submitting = false; }
+    };
+    invoke('onboarding_info').then(settings => {
+      document.getElementById('app-repo').value = settings.app_repo || settings.workspace || '';
+      document.getElementById('api-url').value = settings.api_dir ? 'https://switch.voipappz.io' : (settings.api_url || 'https://switch.voipappz.io');
+    }).catch(error => { connection.textContent = String(error); });
     async function refresh() {
       try {
-        const state = await window.__TAURI__.core.invoke('startup_progress');
-        document.getElementById('heading').textContent = state.status === 'failed' ? 'Setup needs attention' : state.status === 'ready' ? 'Builder is ready' : 'Getting things ready';
+        const state = await invoke('startup_progress');
+        document.getElementById('fields').disabled = submitting || state.status === 'working';
+        document.getElementById('heading').textContent = state.status === 'configure' ? 'Connect your app and API' : state.status === 'failed' ? 'Setup needs attention' : state.status === 'ready' ? 'Builder is ready' : 'Getting things ready';
         document.getElementById('status').textContent = state.lines.at(-1) || 'Starting…';
         const history = document.getElementById('history');
         const text = state.lines.join('\n');
@@ -43,7 +114,7 @@
         }
         document.getElementById('path').textContent = state.log_path;
         details = text + '\n\nLog: ' + state.log_path;
-        document.getElementById('timer').textContent = state.status === 'working' ? Math.floor((Date.now() - started) / 1000) + 's elapsed' : state.status === 'ready' ? 'Complete' : 'Stopped';
+        document.getElementById('timer').textContent = state.status === 'working' ? Math.floor((Date.now() - started) / 1000) + 's elapsed' : state.status === 'ready' ? 'Complete' : state.status === 'configure' ? 'Setup' : 'Stopped';
       } catch (error) {
         document.getElementById('status').textContent = 'Could not read progress. Use View Logs in the Builder tray menu. ' + error;
       } finally { setTimeout(refresh, 750); }
