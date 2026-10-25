@@ -32,17 +32,33 @@ and has no automatic updates.
 
 - Windows 10 or 11, 64-bit, with internet access for the first run.
 - A Git checkout of the VoipAppz React app (`voipappz/app`) **on a local
-  drive** (for example `C:\Users\you\voipappz-app`). A folder on WSL
-  (`\\wsl.localhost\...`) or a network share does not work: `npm` on Windows
-  cannot run there. To work on a WSL checkout, run the Linux Builder inside
-  WSL instead (see "Run it" below); the Windows browser reaches it on
-  `localhost`. Builder makes its own worktree next to the checkout,
-  `<app folder>-builder`, on the branch `builder/work`.
+  drive**; see "Get the app" below. A folder on WSL (`\\wsl.localhost\...`)
+  or a network share does not work: `npm` on Windows cannot run there. To
+  work on a WSL checkout, run the Linux Builder inside WSL instead (see "Run
+  it" below); the Windows browser reaches it on `localhost`.
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and
   signed in (run `claude` once in a terminal). The agent runs on your Claude
   account.
 - A VoipAppz account on `https://switch.voipappz.io` to sign in to the
   previews. Node.js is not required: Builder installs the version the app needs.
+
+**Get the app**
+
+1. Install [Git for Windows](https://git-scm.com/download/win) if
+   `git --version` does not work in PowerShell. The defaults are fine.
+2. In PowerShell (not WSL):
+
+   ```powershell
+   cd $env:USERPROFILE
+   git clone https://github.com/voipappz/app.git voipappz-app
+   ```
+
+   The repository is private: Git opens a browser to sign in to GitHub the
+   first time. The checkout is `C:\Users\<you>\voipappz-app`.
+3. Check that `voipappz-app\package.json` and
+   `voipappz-app\src\builder-client\main.jsx` exist; onboarding looks for
+   both. Builder makes its own worktree next to the checkout,
+   `voipappz-app-builder`, on the branch `builder/work`.
 
 **Install**
 
