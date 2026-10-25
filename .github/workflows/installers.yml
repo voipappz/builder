@@ -39,6 +39,9 @@ jobs:
         with:
           node-version: 20
 
+      - name: Verify Windows startup
+        run: cargo test --locked -p builder-core launcher::tests --lib
+
       - name: Build
         working-directory: desktop
         shell: bash

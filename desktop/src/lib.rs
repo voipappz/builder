@@ -1,5 +1,5 @@
 //! VoipAppz Builder desktop app: a tray icon that runs the Builder server
-//! (core::launcher) and opens it in the browser. It has no window of its own.
+//! (core::launcher), shows setup progress, and opens it in the browser.
 
 use builder_core::launcher::{self, Running, Settings};
 use std::path::PathBuf;
@@ -16,6 +16,48 @@ use tracing::{error, info};
 #[derive(Default)]
 struct AppState {
     running: Mutex<Option<Running>>,
+    startup: std::sync::Mutex<StartupProgress>,
+}
+
+#[derive(Clone, Default, serde::Serialize)]
+struct StartupProgress {
+    status: String,
+    lines: Vec<String>,
+    log_path: String,
+}
+
+#[tauri::command]
+fn startup_progress(state: tauri::State<'_, AppState>) -> StartupProgress {
+    state.startup.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+fn progress(app: &AppHandle, line: &str, status: &str) {
+    info!("{}", line);
+    let state = app.state::<AppState>();
+    let mut startup = state.startup.lock().unwrap_or_else(|e| e.into_inner());
+    startup.status = status.into();
+    startup.lines.push(line.into());
+    if startup.lines.len() > 300 { startup.lines.remove(0); }
+}
+
+fn show_startup(app: &AppHandle) {
+    {
+        let state = app.state::<AppState>();
+        *state.startup.lock().unwrap_or_else(|e| e.into_inner()) = StartupProgress {
+            status: "working".into(), lines: vec!["Starting VoipAppz Builder…".into()],
+            log_path: log_path().to_string_lossy().into_owned(),
+        };
+    }
+    if let Some(window) = app.get_webview_window("startup") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    } else if let Err(error) = tauri::WebviewWindowBuilder::new(app, "startup", tauri::WebviewUrl::App("index.html".into()))
+        .title("VoipAppz Builder — Startup")
+        .inner_size(720.0, 560.0)
+        .min_inner_size(420.0, 360.0)
+        .build() {
+        error!("Could not show setup progress: {}", error);
+    }
 }
 
 fn log_path() -> PathBuf {
@@ -57,6 +99,8 @@ fn open_target(app: &AppHandle, target: &str) {
 }
 
 fn show_error(app: &AppHandle, message: impl Into<String>) {
+    let message = message.into();
+    progress(app, &message, "failed");
     app.dialog()
         .message(message)
         .title("VoipAppz Builder")
@@ -78,7 +122,14 @@ async fn pick_workspace(app: &AppHandle) -> Option<PathBuf> {
 /// Stop what runs, then start from the saved settings and open the page.
 async fn restart(app: AppHandle) {
     let state = app.state::<AppState>();
-    let mut running = state.running.lock().await;
+    let Ok(mut running) = state.running.try_lock() else {
+        if let Some(window) = app.get_webview_window("startup") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        return;
+    };
+    show_startup(&app);
     if let Some(current) = running.take() {
         current.stop().await;
     }
@@ -88,6 +139,7 @@ async fn restart(app: AppHandle) {
         Err(e) => return show_error(&app, format!("Settings could not be read: {}", e)),
     };
     if settings.workspace.is_none() && settings.app_repo.is_none() {
+        progress(&app, "Choose the app repository in the folder selection dialog.", "working");
         match pick_workspace(&app).await {
             Some(folder) => {
                 set_app_repo(&mut settings, folder);
@@ -104,9 +156,10 @@ async fn restart(app: AppHandle) {
         }
     }
 
-    match launcher::start(&settings, |line| info!("{}", line)).await {
+    match launcher::start(&settings, |line| progress(&app, line, "working")).await {
         Ok(started) => {
             info!("Builder is running; {}", started.api_note);
+            progress(&app, "Builder is ready. Opening your browser. You can close this setup window.", "ready");
             open_target(&app, &started.url);
             *running = Some(started);
         }
@@ -118,13 +171,17 @@ async fn restart(app: AppHandle) {
 }
 
 async fn open_page(app: AppHandle) {
-    let url = app
-        .state::<AppState>()
-        .running
-        .lock()
-        .await
-        .as_ref()
-        .map(|r| r.url.clone());
+    let state = app.state::<AppState>();
+    let url = match state.running.try_lock() {
+        Ok(running) => running.as_ref().map(|r| r.url.clone()),
+        Err(_) => {
+            if let Some(window) = app.get_webview_window("startup") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+            return;
+        }
+    };
     match url {
         Some(url) => open_target(&app, &url),
         None => restart(app).await,
@@ -159,6 +216,7 @@ pub fn run() {
     let _log_guard = init_logging();
 
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![startup_progress])
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tauri::async_runtime::spawn(open_page(app.clone()));
         }))
@@ -226,7 +284,9 @@ pub fn run() {
                         }
                         "quit" => {
                             tauri::async_runtime::spawn(async move {
-                                if let Some(running) = app.state::<AppState>().running.lock().await.take() {
+                                let state = app.state::<AppState>();
+                                let running = state.running.try_lock().ok().and_then(|mut running| running.take());
+                                if let Some(running) = running {
                                     running.stop().await;
                                 }
                                 app.exit(0);

@@ -48,6 +48,11 @@ private copy under Builder's state directory. First-run setup requires internet
 access; no preinstalled npm or mise, administrator access, or shell activation
 is needed. Setup progress and download/install failures appear in the launcher.
 
+The desktop app shows a setup window with the current step, elapsed time and
+recent progress. Long installs report every five seconds. If setup fails, the
+window keeps the details and log location visible; use **Copy details** when
+reporting a problem. Closing that window leaves Builder running in the tray.
+
 ## Start here
 
 - [How it works](docs/how-it-works.md): the parts, start-up, the rules the

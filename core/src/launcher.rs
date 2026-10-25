@@ -214,6 +214,14 @@ pub fn api_url_from_dir(api_dir: &Path) -> Option<String> {
 }
 
 async fn run(program: &str, args: &[&str], cwd: &Path, env: &HashMap<String, String>) -> Result<String, String> {
+    let limit = if args == ["--version"] { Duration::from_secs(20) }
+        else if program == "git" { Duration::from_secs(120) }
+        else { Duration::from_secs(15 * 60) };
+    run_with_timeout(program, args, cwd, env, limit).await
+}
+
+async fn run_with_timeout(program: &str, args: &[&str], cwd: &Path, env: &HashMap<String, String>, limit: Duration) -> Result<String, String> {
+    use tokio::io::AsyncReadExt;
     // npm ships as npm.cmd on Windows and must run through cmd.exe.
     #[cfg(windows)]
     let mut command = if program == "npm" {
@@ -225,22 +233,36 @@ async fn run(program: &str, args: &[&str], cwd: &Path, env: &HashMap<String, Str
     };
     #[cfg(not(windows))]
     let mut command = tokio::process::Command::new(program);
-    let output = command.args(args)
+    command.args(args)
         .current_dir(cwd)
         .env_clear()
         .envs(env)
         .stdin(Stdio::null())
-        .output()
-        .await
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut process = spawn_command(command)
         .map_err(|e| format!("{} could not run: {}", program, e))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let mut stdout = process.child.stdout.take().ok_or("Command stdout unavailable")?;
+    let mut stderr = process.child.stderr.take().ok_or("Command stderr unavailable")?;
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let result = tokio::time::timeout(limit, async {
+        tokio::try_join!(process.child.wait(), stdout.read_to_end(&mut out), stderr.read_to_end(&mut err))
+    }).await;
+    let (status, _, _) = result.map_err(|_| format!(
+        "{} {} timed out after {} seconds. Check the internet connection and retry. Details: {}",
+        program, args.join(" "), limit.as_secs(), String::from_utf8_lossy(&err).trim()
+    ))?.map_err(|e| format!("{program} could not finish: {e}"))?;
+    if status.success() {
+        Ok(String::from_utf8_lossy(&out).trim().to_string())
     } else {
         Err(format!(
             "{} {} failed: {}",
             program,
             args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
+            String::from_utf8_lossy(&err).trim()
         ))
     }
 }
@@ -251,6 +273,30 @@ fn node_pin(repo: &Path) -> String {
         .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
         .and_then(|value| value.get("tools")?.get("node")?.as_str().map(str::to_owned))
         .unwrap_or_else(|| "22".into())
+}
+
+async fn report_progress<T>(
+    label: &str,
+    progress: &impl Fn(&str),
+    operation: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    progress(label);
+    let started = tokio::time::Instant::now();
+    tokio::pin!(operation);
+    loop {
+        tokio::select! {
+            result = &mut operation => {
+                match &result {
+                    Ok(_) => progress(&format!("Done: {label} ({}s)", started.elapsed().as_secs())),
+                    Err(_) => progress(&format!("Failed: {label} ({}s)", started.elapsed().as_secs())),
+                }
+                return result;
+            }
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                progress(&format!("Still working: {label} — {}s elapsed", started.elapsed().as_secs()));
+            }
+        }
+    }
 }
 
 async fn install_mise(
@@ -294,6 +340,7 @@ async fn ensure_mise(
         .or_else(|| dirs::home_dir().map(|home| home.join(".local/bin").join(executable)).filter(|p| p.is_file()))
         .or_else(|| managed.is_file().then(|| managed.clone()));
     if let Some(path) = existing {
+        progress(&format!("Using mise: {}", path.display()));
         return Ok(path);
     }
 
@@ -306,7 +353,8 @@ async fn ensure_mise(
         .and_then(reqwest::Response::error_for_status)
         .map_err(|e| format!("Could not download the mise installer. Check your internet connection and retry: {e}"))?
         .text().await.map_err(|e| format!("Read mise installer: {e}"))?;
-    install_mise(&managed, &script, env).await
+    progress("mise installer downloaded successfully.");
+    report_progress("Installing mise; downloading and verifying its release", progress, install_mise(&managed, &script, env)).await
         .map_err(|e| format!("Could not install mise for Builder: {e}"))?;
     Ok(managed)
 }
@@ -317,10 +365,12 @@ async fn ensure_node(
     progress: &impl Fn(&str),
 ) -> Result<(), String> {
     let pin = node_pin(repo);
+    progress(&format!("Checking Node.js and npm (required Node version: {pin})…"));
     let version = run("node", &["--version"], repo, env).await.unwrap_or_default();
     let major = version.trim_start_matches('v').split('.').next().and_then(|v| v.parse::<u32>().ok());
     let required = pin.split('.').next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(22);
     if major.is_some_and(|v| v >= required) && run("npm", &["--version"], repo, env).await.is_ok() {
+        progress(&format!("Node {version} and npm are already available."));
         return Ok(());
     }
     let mise = ensure_mise(repo, env, progress).await?;
@@ -331,7 +381,8 @@ async fn ensure_node(
     let mut mise_env = env.clone();
     mise_env.insert("MISE_NO_CONFIG".into(), "1".into());
     progress(&format!("Installing Node {pin} and npm with mise…"));
-    run(&mise, &["install", &tool], repo, &mise_env).await?;
+    report_progress("Installing Node.js and npm with mise; first setup may take several minutes", progress,
+        run(&mise, &["install", &tool], repo, &mise_env)).await?;
     let location = run(&mise, &["where", &tool], repo, &mise_env).await?;
     let bin = PathBuf::from(location);
     #[cfg(not(windows))]
@@ -342,6 +393,7 @@ async fn ensure_node(
     env.insert("PATH".into(), path.to_string_lossy().into_owned());
     run("npm", &["--version"], repo, env).await
         .map_err(|e| format!("mise installed Node but npm is still unavailable: {e}"))?;
+    progress("Node.js and npm are ready.");
     Ok(())
 }
 
@@ -361,7 +413,10 @@ async fn ensure_workspace(
     if !workspace.exists() {
         let repo = app_repo.ok_or_else(|| format!("Workspace {} does not exist", workspace.display()))?;
         progress("Creating Builder's worktree of the app…");
-        let _ = run("git", &["fetch", "origin", "main"], repo, env).await;
+        if let Err(error) = report_progress("Fetching the latest app code", progress,
+            run("git", &["fetch", "origin", "main"], repo, env)).await {
+            progress(&format!("Could not refresh the app; trying the existing checkout. {error}"));
+        }
         let path = workspace.to_string_lossy().into_owned();
         let has_branch = run("git", &["rev-parse", "--verify", "--quiet", "refs/heads/builder/work"], repo, env)
             .await
@@ -374,6 +429,7 @@ async fn ensure_workspace(
     }
     let workspace = std::fs::canonicalize(&workspace)
         .map_err(|e| format!("Workspace {}: {}", workspace.display(), e))?;
+    progress(&format!("Workspace: {}", workspace.display()));
 
     if !workspace.join("node_modules").exists() {
         let shared = app_repo.map(|r| r.join("node_modules")).filter(|p| p.is_dir());
@@ -388,10 +444,12 @@ async fn ensure_workspace(
             }
             _ => {
                 progress("Installing the app's packages (npm ci)…");
-                run("npm", &["ci"], &workspace, env).await?;
+                report_progress("Installing app packages with npm ci; this can take several minutes", progress,
+                    run("npm", &["ci"], &workspace, env)).await?;
             }
         }
     }
+    progress("App packages are ready.");
     Ok(workspace)
 }
 
@@ -456,7 +514,18 @@ pub async fn start(settings: &Settings, progress: impl Fn(&str)) -> Result<Runni
         progress("Starting the app dev server (npm run dev)…");
         dev_server = Some(start_dev_server(&workspace, env.clone())?);
         let deadline = tokio::time::Instant::now() + DEV_SERVER_WAIT;
+        let mut next_update = tokio::time::Instant::now();
         while !answers(&client_url).await {
+            if let Some(status) = dev_server.as_mut().unwrap().child.try_wait()
+                .map_err(|e| format!("Could not check the app process: {e}"))? {
+                return Err(format!("The app stopped before it was ready ({status}). See {}",
+                    state_dir().join("app.log").display()));
+            }
+            if tokio::time::Instant::now() >= next_update {
+                progress(&format!("Waiting for the app at {client_url}; startup limit is {} seconds. Details: {}",
+                    DEV_SERVER_WAIT.as_secs(), state_dir().join("app.log").display()));
+                next_update = tokio::time::Instant::now() + Duration::from_secs(5);
+            }
             if tokio::time::Instant::now() > deadline {
                 return Err(format!(
                     "The app dev server did not answer at {} within {}s; see {}",
@@ -470,6 +539,7 @@ pub async fn start(settings: &Settings, progress: impl Fn(&str)) -> Result<Runni
     }
 
     let mut api_mcp = None;
+    progress("Checking the API connection…");
     let api_note = match &api_url {
         None => "API tools off (no api_url or api_dir in settings)".to_string(),
         Some(api_url) if !valid_origin(api_url) => format!("API tools off: invalid api_url {}", api_url),
@@ -482,6 +552,9 @@ pub async fn start(settings: &Settings, progress: impl Fn(&str)) -> Result<Runni
             Err(why) => format!("API tools off: {}", why),
         },
     };
+
+    progress(&api_note);
+    progress("Starting Builder's local connection…");
 
     let config = BuilderConfig {
         port: settings.port,
@@ -525,6 +598,45 @@ pub async fn start(settings: &Settings, progress: impl Fn(&str)) -> Result<Runni
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn hung_command_is_stopped_at_the_deadline() {
+        let env = HashMap::from([("PATH".into(), "/usr/bin:/bin".into())]);
+        let started = std::time::Instant::now();
+        let error = run_with_timeout("sh", &["-c", "sleep 30"], Path::new("/tmp"), &env,
+            Duration::from_millis(100)).await.unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn npm_cmd_works_with_a_custom_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("node tools");
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::write(bin.join("npm.cmd"), "@echo off\r\necho 10.0.0\r\n").unwrap();
+        let mut env: HashMap<String, String> = std::env::vars().filter(|(k, _)| !k.eq_ignore_ascii_case("PATH")).collect();
+        env.insert("PATH".into(), bin.to_string_lossy().into_owned());
+        assert_eq!(run("npm", &["--version"], dir.path(), &env).await.unwrap(), "10.0.0");
+    }
+
+    #[tokio::test]
+    async fn progress_reports_waiting_and_failure() {
+        let lines = std::sync::Mutex::new(Vec::new());
+        let result: Result<(), String> = report_progress("Test download", &|line| {
+            lines.lock().unwrap().push(line.to_owned());
+        }, async {
+            tokio::time::sleep(Duration::from_millis(5100)).await;
+            Err("network unavailable".into())
+        }).await;
+        assert_eq!(result.unwrap_err(), "network unavailable");
+        let lines = lines.into_inner().unwrap();
+        assert_eq!(lines[0], "Test download");
+        assert!(lines.iter().any(|line| line.starts_with("Still working: Test download")));
+        assert!(lines.last().unwrap().starts_with("Failed: Test download"));
+    }
 
     #[cfg(unix)]
     #[tokio::test]

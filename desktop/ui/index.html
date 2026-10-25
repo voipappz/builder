@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VoipAppz Builder — Startup</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px; background: #fff8ec; color: #111; font: 15px/1.5 system-ui, sans-serif; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .brand { padding: 8px 18px; background: #fff56e; border: 2px solid #111; border-radius: 50%; font-weight: 800; }
+    h1 { font-size: 26px; margin-bottom: 8px; }
+    #status { overflow-wrap: anywhere; }
+    #history { height: 240px; overflow: auto; padding: 16px; border: 2px solid #111; border-radius: 12px; background: #fff; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.6 ui-monospace, monospace; }
+    #timer, footer { font-size: 13px; }
+    #path { overflow-wrap: anywhere; user-select: all; }
+    button { background: #fdae98; border: 2px solid #111; border-radius: 20px; padding: 8px 16px; font: inherit; cursor: pointer; }
+    button:focus-visible { outline: 3px solid #111; outline-offset: 3px; }
+  </style>
+</head>
+<body>
+  <header><span class="brand">VoipAppz Builder</span><span id="timer">Starting…</span></header>
+  <h1 id="heading">Getting things ready</h1>
+  <p id="status" role="status">Connecting to Builder’s setup progress…</p>
+  <p>First-time downloads may take several minutes. Progress updates appear below.</p>
+  <pre id="history" tabindex="0" aria-label="Setup details"></pre>
+  <button id="copy" type="button">Copy details</button>
+  <footer><p>Full log: <span id="path"></span></p><p>Closing this window keeps Builder running in the system tray.</p></footer>
+  <script>
+    const started = Date.now();
+    let details = '';
+    async function refresh() {
+      try {
+        const state = await window.__TAURI__.core.invoke('startup_progress');
+        document.getElementById('heading').textContent = state.status === 'failed' ? 'Setup needs attention' : state.status === 'ready' ? 'Builder is ready' : 'Getting things ready';
+        document.getElementById('status').textContent = state.lines.at(-1) || 'Starting…';
+        const history = document.getElementById('history');
+        const text = state.lines.join('\n');
+        if (history.textContent !== text) {
+          const atBottom = history.scrollHeight - history.scrollTop - history.clientHeight < 30;
+          history.textContent = text;
+          if (atBottom) history.scrollTop = history.scrollHeight;
+        }
+        document.getElementById('path').textContent = state.log_path;
+        details = text + '\n\nLog: ' + state.log_path;
+        document.getElementById('timer').textContent = state.status === 'working' ? Math.floor((Date.now() - started) / 1000) + 's elapsed' : state.status === 'ready' ? 'Complete' : 'Stopped';
+      } catch (error) {
+        document.getElementById('status').textContent = 'Could not read progress. Use View Logs in the Builder tray menu. ' + error;
+      } finally { setTimeout(refresh, 750); }
+    }
+    document.getElementById('copy').onclick = async () => {
+      try { await navigator.clipboard.writeText(details); document.getElementById('copy').textContent = 'Copied'; }
+      catch { document.getElementById('copy').textContent = 'Select and copy the details above'; }
+    };
+    refresh();
+  </script>
+</body>
+</html>
