@@ -429,6 +429,26 @@ async fn install_mise(
     result
 }
 
+/// The PATH variable's name in `env`: Windows spells it `Path`, and a
+/// second `PATH` entry would race it, so changes must reuse that name.
+fn path_key(env: &HashMap<String, String>) -> String {
+    env.keys().find(|k| k.eq_ignore_ascii_case("PATH")).cloned().unwrap_or_else(|| "PATH".into())
+}
+
+fn env_path(env: &HashMap<String, String>) -> Option<&String> {
+    env.get(&path_key(env))
+}
+
+/// Put `dir` first on PATH, keeping the variable's existing name.
+fn prepend_path(env: &mut HashMap<String, String>, dir: PathBuf) -> Result<(), String> {
+    let key = path_key(env);
+    let mut paths = vec![dir];
+    paths.extend(std::env::split_paths(env.get(&key).map(String::as_str).unwrap_or_default()));
+    let path = std::env::join_paths(paths).map_err(|e| format!("PATH: {e}"))?;
+    env.insert(key, path.to_string_lossy().into_owned());
+    Ok(())
+}
+
 async fn ensure_mise(
     repo: &Path,
     env: &HashMap<String, String>,
@@ -436,7 +456,7 @@ async fn ensure_mise(
 ) -> Result<PathBuf, String> {
     let executable = if cfg!(windows) { "mise.exe" } else { "mise" };
     let managed = state_dir().join("tools").join(executable);
-    let existing = which::which_in(executable, env.get("PATH"), repo).ok()
+    let existing = which::which_in(executable, env_path(env), repo).ok()
         .or_else(|| dirs::home_dir().map(|home| home.join(".local/bin").join(executable)).filter(|p| p.is_file()))
         .or_else(|| managed.is_file().then(|| managed.clone()));
     if let Some(path) = existing {
@@ -489,10 +509,7 @@ async fn ensure_node(
     let bin = PathBuf::from(location);
     #[cfg(not(windows))]
     let bin = bin.join("bin");
-    let mut paths = vec![bin];
-    paths.extend(std::env::split_paths(env.get("PATH").map(String::as_str).unwrap_or_default()));
-    let path = std::env::join_paths(paths).map_err(|e| format!("Node PATH: {e}"))?;
-    env.insert("PATH".into(), path.to_string_lossy().into_owned());
+    prepend_path(env, bin)?;
     run("npm", &["--version"], repo, env).await
         .map_err(|e| format!("mise installed Node but npm is still unavailable: {e}"))?;
     progress("Node.js and npm are ready.");
@@ -548,8 +565,13 @@ async fn ensure_workspace(
             }
             _ => {
                 progress("Installing the app's packages (npm ci)…");
-                report_progress("Installing app packages with npm ci; this can take several minutes", progress,
-                    run("npm", &["ci"], &workspace, env)).await?;
+                let install = || run("npm", &["ci", "--no-audit", "--no-fund"], &workspace, env);
+                if let Err(first) = report_progress("Installing app packages with npm ci; this can take several minutes", progress, install()).await {
+                    progress(&format!("The first npm ci attempt failed; retrying once (downloaded packages are reused). {}",
+                        first.lines().next().unwrap_or_default()));
+                    report_progress("Installing app packages with npm ci, second attempt", progress, install()).await
+                        .map_err(|second| format!("{second}\n\nFirst attempt: {first}"))?;
+                }
             }
         }
     }
@@ -847,6 +869,18 @@ mod tests {
         assert_eq!(settings.api_url.as_deref(), Some("https://switch.voipappz.io"));
         assert!(settings.api_dir.is_none());
         assert!(settings.workspace.is_none());
+    }
+
+    #[test]
+    fn path_changes_keep_the_windows_variable_name() {
+        let mut env = HashMap::from([("Path".to_string(), std::env::join_paths(["/usr/bin"]).unwrap().to_string_lossy().into_owned())]);
+        prepend_path(&mut env, PathBuf::from("/opt/node")).unwrap();
+        assert_eq!(env.len(), 1, "no second PATH entry: {env:?}");
+        let path = env_path(&env).unwrap();
+        assert!(std::env::split_paths(path).next() == Some(PathBuf::from("/opt/node")), "{path}");
+        let mut empty = HashMap::new();
+        prepend_path(&mut empty, PathBuf::from("/opt/node")).unwrap();
+        assert!(empty.contains_key("PATH"));
     }
 
     #[test]
