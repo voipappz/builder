@@ -99,6 +99,9 @@ and has no automatic updates.
 
 - Settings: `%APPDATA%\voipappz-builder\builder.toml`.
 - Logs: `%LOCALAPPDATA%\voipappz-builder\builder.log` and `app.log`.
+- Tray icon dot: grey = not connected, yellow = setting up, green =
+  running, red = setup failed. The setup window shows the seven setup
+  steps as a checklist; **Setup details** below it has the full output.
 - Tray menu: **Open VoipAppz Builder**, **Connect App and API…**,
   **Settings**, **View Logs**, **Restart**, **Quit VoipAppz Builder**. Closing
   the setup window leaves Builder running in the tray.

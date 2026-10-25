@@ -61,6 +61,9 @@ fn show_onboarding(app: &AppHandle) {
 #[derive(Clone, Default, serde::Serialize)]
 struct StartupProgress {
     status: String,
+    /// The setup step in progress (an id from `launcher::SETUP_STEPS`).
+    step: String,
+    steps: Vec<(String, String)>,
     lines: Vec<String>,
     log_path: String,
 }
@@ -73,20 +76,72 @@ fn startup_progress(state: tauri::State<'_, AppState>) -> StartupProgress {
 fn progress(app: &AppHandle, line: &str, status: &str) {
     info!("{}", line);
     let state = app.state::<AppState>();
-    let mut startup = state.startup.lock().unwrap_or_else(|e| e.into_inner());
-    startup.status = status.into();
-    startup.lines.push(line.into());
-    if startup.lines.len() > 300 { startup.lines.remove(0); }
+    let changed = {
+        let mut startup = state.startup.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = startup.status != status;
+        startup.status = status.into();
+        match line.strip_prefix(launcher::STEP_PREFIX) {
+            Some(id) => {
+                startup.step = id.into();
+                startup.lines.push(format!("▸ {}", launcher::step_label(id).unwrap_or(id)));
+            }
+            None => startup.lines.push(line.into()),
+        }
+        if startup.lines.len() > 300 { startup.lines.remove(0); }
+        changed
+    };
+    if changed {
+        set_tray_status(app, status);
+    }
+}
+
+const TRAY_ID: &str = "main";
+
+/// Show the state in the tray: the app icon with a coloured dot (yellow
+/// while setting up, green when ready, red on failure, grey before setup).
+fn set_tray_status(app: &AppHandle, status: &str) {
+    let (colour, tooltip) = match status {
+        "ready" => ([46, 204, 64], "VoipAppz Builder — running"),
+        "failed" => ([229, 57, 53], "VoipAppz Builder — setup failed"),
+        "configure" => ([150, 150, 150], "VoipAppz Builder — not connected"),
+        _ => ([255, 196, 0], "VoipAppz Builder — setting up…"),
+    };
+    let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
+    let _ = tray.set_tooltip(Some(tooltip));
+    if let Some(icon) = app.default_window_icon().map(|base| status_icon(base, colour)) {
+        let _ = tray.set_icon(Some(icon));
+    }
+}
+
+/// The base icon with a filled, dark-edged dot in the bottom-right corner.
+fn status_icon(base: &tauri::image::Image<'_>, colour: [u8; 3]) -> tauri::image::Image<'static> {
+    let (width, height) = (base.width(), base.height());
+    let mut rgba = base.rgba().to_vec();
+    let radius = (width.min(height) as f32 * 0.24).max(3.0);
+    let (cx, cy) = (width as f32 - radius - 1.0, height as f32 - radius - 1.0);
+    for y in 0..height {
+        for x in 0..width {
+            let distance = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+            if distance > radius { continue; }
+            let i = ((y * width + x) * 4) as usize;
+            let pixel = if distance > radius - radius.max(4.0) / 4.0 { [17, 17, 17, 255] } else { [colour[0], colour[1], colour[2], 255] };
+            rgba[i..i + 4].copy_from_slice(&pixel);
+        }
+    }
+    tauri::image::Image::new_owned(rgba, width, height)
 }
 
 fn show_startup(app: &AppHandle) {
     {
         let state = app.state::<AppState>();
         *state.startup.lock().unwrap_or_else(|e| e.into_inner()) = StartupProgress {
-            status: "working".into(), lines: vec!["Starting VoipAppz Builder…".into()],
+            status: "working".into(), step: String::new(),
+            steps: launcher::SETUP_STEPS.iter().map(|(id, label)| (id.to_string(), label.to_string())).collect(),
+            lines: vec!["Starting VoipAppz Builder…".into()],
             log_path: log_path().to_string_lossy().into_owned(),
         };
     }
+    set_tray_status(app, "working");
     if let Some(window) = app.get_webview_window("startup") {
         let _ = window.show();
         let _ = window.set_focus();
@@ -255,7 +310,7 @@ pub fn run() {
                 &[&open, &separator, &workspace, &settings, &logs, &separator2, &at_login, &restart_item, &quit],
             )?;
 
-            let mut tray = TrayIconBuilder::new()
+            let mut tray = TrayIconBuilder::with_id(TRAY_ID)
                 .tooltip("VoipAppz Builder")
                 .menu(&menu)
                 .on_menu_event(move |app, event| {

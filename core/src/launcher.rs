@@ -15,6 +15,24 @@ use crate::builder::{self, ApiMcp, BuilderConfig};
 use crate::command::{create_shell_command, spawn_command, ChildProcess};
 
 pub const DEFAULT_AGENT_COMMAND: &str = "npx -y @agentclientprotocol/claude-agent-acp@0.94.0";
+
+/// Setup steps, in order, as `(id, label)`. `start` reports entering a step
+/// with a progress line of `STEP_PREFIX` followed by the id, so a UI can
+/// show a checklist; other lines are details for the current step.
+pub const SETUP_STEPS: &[(&str, &str)] = &[
+    ("env", "Read your environment"),
+    ("node", "Node.js and npm"),
+    ("workspace", "App working copy"),
+    ("packages", "App packages"),
+    ("app", "App dev server"),
+    ("api", "API connection"),
+    ("server", "Builder connection"),
+];
+pub const STEP_PREFIX: &str = "@step ";
+
+pub fn step_label(id: &str) -> Option<&'static str> {
+    SETUP_STEPS.iter().find(|(step, _)| *step == id).map(|(_, label)| *label)
+}
 const DEV_SERVER_WAIT: Duration = Duration::from_secs(90);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -447,6 +465,7 @@ async fn ensure_node(
     progress: &impl Fn(&str),
 ) -> Result<(), String> {
     let pin = node_pin(repo);
+    progress("@step node");
     progress("Builder uses Node.js and npm to run your local app preview and install its packages. Missing tools will be set up automatically.");
     progress(&format!("Checking Node.js and npm (required Node version: {pin})…"));
     let version = run("node", &["--version"], repo, env).await.unwrap_or_default();
@@ -493,6 +512,7 @@ async fn ensure_workspace(
         (None, Some(repo)) => default_worktree(repo),
         (None, None) => return Err("Choose the app repository (../app) Builder works on.".into()),
     };
+    progress("@step workspace");
     if !workspace.exists() {
         let repo = app_repo.ok_or_else(|| format!("Workspace {} does not exist", workspace.display()))?;
         progress("Creating Builder's worktree of the app…");
@@ -514,6 +534,7 @@ async fn ensure_workspace(
         .map_err(|e| format!("Workspace {}: {}", workspace.display(), e))?;
     progress(&format!("Workspace: {}", workspace.display()));
 
+    progress("@step packages");
     if !workspace.join("node_modules").exists() {
         let shared = app_repo.map(|r| r.join("node_modules")).filter(|p| p.is_dir());
         let same_lock = app_repo.is_some_and(|r| {
@@ -559,6 +580,7 @@ pub async fn start(settings: &Settings, progress: impl Fn(&str)) -> Result<Runni
 pub async fn start_with_api_credential(settings: &Settings, basic: Option<String>, progress: impl Fn(&str)) -> Result<Running, String> {
     // A menu-launched app does not get the terminal's PATH (nvm, mise,
     // Homebrew); use what a login shell would have.
+    progress("@step env");
     progress("Reading your shell environment…");
     let env_dir = settings
         .app_repo
@@ -604,6 +626,7 @@ pub async fn start_with_api_credential(settings: &Settings, basic: Option<String
     }
 
     let mut dev_server = None;
+    progress("@step app");
     if settings.start_app && !answers(&client_url).await {
         progress("Starting the app dev server (npm run dev)…");
         dev_server = Some(start_dev_server(&workspace, env.clone())?);
@@ -633,6 +656,7 @@ pub async fn start_with_api_credential(settings: &Settings, basic: Option<String
     }
 
     let mut api_mcp = None;
+    progress("@step api");
     progress("Checking the API connection…");
     let api_note = match &api_url {
         None => "API tools off (no api_url or api_dir in settings)".to_string(),
@@ -651,6 +675,7 @@ pub async fn start_with_api_credential(settings: &Settings, basic: Option<String
     };
 
     progress(&api_note);
+    progress("@step server");
     progress("Starting Builder's local connection…");
 
     let config = BuilderConfig {

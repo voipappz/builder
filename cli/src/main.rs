@@ -130,7 +130,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         agent_command: cli.agent_command,
     };
 
-    let running = launcher::start(&settings, |line| eprintln!("  {}", line)).await?;
+    let running = launcher::start(&settings, |line| match line.strip_prefix(launcher::STEP_PREFIX) {
+        Some(id) => eprintln!("\n== {}", launcher::step_label(id).unwrap_or(id)),
+        None => eprintln!("  {}", line),
+    }).await?;
 
     eprintln!();
     eprintln!("VoipAppz Builder");

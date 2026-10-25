@@ -11,7 +11,7 @@
     .brand { padding: 8px 18px; background: #fff56e; border: 2px solid #111; border-radius: 50%; font-weight: 800; }
     h1 { font-size: 26px; margin-bottom: 8px; }
     #status { overflow-wrap: anywhere; }
-    #history { height: 240px; overflow: auto; padding: 16px; border: 2px solid #111; border-radius: 12px; background: #fff; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.6 ui-monospace, monospace; }
+    #history { height: 160px; overflow: auto; padding: 16px; border: 2px solid #111; border-radius: 12px; background: #fff; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.6 ui-monospace, monospace; }
     #timer, footer { font-size: 13px; }
     #path { overflow-wrap: anywhere; user-select: all; }
     button { background: #fdae98; border: 2px solid #111; border-radius: 20px; padding: 8px 16px; font: inherit; cursor: pointer; }
@@ -25,6 +25,24 @@
     .hint { font-size: 13px; color: #444; }
     #connection { white-space: pre-wrap; }
     button:disabled { opacity: .6; cursor: wait; }
+    /* Setup wizard */
+    #wizard { list-style: none; margin: 20px 0; padding: 0; border: 2px solid #111; border-radius: 14px; background: #fff; overflow: hidden; }
+    #wizard li { display: grid; grid-template-columns: 36px 1fr auto; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid #e6dfd0; }
+    #wizard li:last-child { border-bottom: 0; }
+    #wizard .mark { width: 28px; height: 28px; border: 2px solid #111; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 14px; background: #fff; }
+    #wizard .label { font-weight: 600; }
+    #wizard .detail { font-size: 13px; color: #444; grid-column: 2 / 4; overflow-wrap: anywhere; }
+    #wizard .time { font-size: 13px; color: #444; }
+    #wizard li.pending { color: #777; }
+    #wizard li.pending .mark { border-color: #999; color: #999; }
+    #wizard li.running { background: #fff9dc; }
+    #wizard li.running .mark { border-color: #111; background: #ffc400; animation: pulse 1.2s ease-in-out infinite; }
+    #wizard li.done .mark { background: #2ecc40; color: #fff; }
+    #wizard li.failed { background: #ffe9e7; }
+    #wizard li.failed .mark { background: #e53935; color: #fff; }
+    @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(.82); } }
+    details.log summary { cursor: pointer; font-weight: 600; margin: 12px 0 8px; }
+    [hidden] { display: none !important; }
   </style>
 </head>
 <body>
@@ -38,7 +56,7 @@
         Builder creates a separate working copy for the coding agent.</p>
       <label for="app-repo">React app folder</label>
       <div class="row"><input id="app-repo" required placeholder="C:\Projects\app"><button type="button" id="browse-app">Browse</button></div>
-      <p class="hint">Use a Git checkout containing package.json. Git must be installed to create the working copy.</p>
+      <p class="hint">Use a Git checkout containing package.json, on a local drive (not a WSL or network folder). Git must be installed to create the working copy.</p>
       <h2>2. Your API</h2>
       <p>The previews connect to this API for account data. The agent can optionally inspect it with read-only tools.</p>
       <label for="api-url">Hosted API address</label><input id="api-url" type="url" required value="https://switch.voipappz.io">
@@ -53,13 +71,15 @@
       <button type="submit" id="start">Connect and open Builder</button>
     </fieldset>
   </form>
-  <p>Builder runs your app locally so you can preview your changes. Node.js runs
+  <ol id="wizard" aria-label="Setup steps" hidden></ol>
+  <p id="intro">Builder runs your app locally so you can preview your changes. Node.js runs
     the app’s development tools, and npm installs the packages they need.
-    Builder sets these up automatically—you don’t need to install them yourself.</p>
-  <p>The first setup needs an internet connection and may take several minutes.
-    Existing compatible tools are reused. Progress updates appear below.</p>
-  <pre id="history" tabindex="0" aria-label="Setup details"></pre>
-  <button id="copy" type="button">Copy details</button>
+    Builder sets these up automatically—you don’t need to install them yourself.
+    The first setup needs an internet connection and may take several minutes.</p>
+  <details class="log" id="log"><summary>Setup details</summary>
+    <pre id="history" tabindex="0" aria-label="Setup details"></pre>
+    <button id="copy" type="button">Copy details</button>
+  </details>
   <footer><p>Full log: <span id="path"></span></p><p>Closing this window keeps Builder running in the system tray.</p></footer>
   <script>
     const started = Date.now();
@@ -67,6 +87,7 @@
     let submitting = false;
     const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
     const connection = document.getElementById('connection');
+    const stepStarted = {};
     function apiFields() {
       return { apiUrl: document.getElementById('api-url').value,
         apiDir: '',
@@ -99,12 +120,40 @@
       document.getElementById('app-repo').value = settings.app_repo || settings.workspace || '';
       document.getElementById('api-url').value = settings.api_dir ? 'https://switch.voipappz.io' : (settings.api_url || 'https://switch.voipappz.io');
     }).catch(error => { connection.textContent = String(error); });
+    // The wizard: one row per setup step. Steps before the current one are
+    // done, the current one runs (or failed), the rest wait. The last plain
+    // progress line is the current step's detail.
+    function renderWizard(state) {
+      const wizard = document.getElementById('wizard');
+      const configuring = state.status === 'configure';
+      wizard.hidden = configuring;
+      document.getElementById('onboarding').hidden = !configuring && state.status !== 'failed';
+      document.getElementById('intro').hidden = !configuring;
+      if (configuring) return;
+      const current = state.steps.findIndex(([id]) => id === state.step);
+      const detail = [...state.lines].reverse().find(line => !line.startsWith('▸ ')) || '';
+      const now = Date.now();
+      if (state.step && !stepStarted[state.step]) stepStarted[state.step] = now;
+      const rows = state.steps.map(([id, label], index) => {
+        const kind = state.status === 'ready' || index < current ? 'done'
+          : index === current ? (state.status === 'failed' ? 'failed' : 'running') : 'pending';
+        const mark = kind === 'done' ? '✓' : kind === 'failed' ? '✕' : kind === 'running' ? '…' : index + 1;
+        const time = kind === 'running' && stepStarted[id] ? Math.floor((now - stepStarted[id]) / 1000) + 's' : '';
+        const showDetail = index === current && kind !== 'done' && detail;
+        return `<li class="${kind}"><span class="mark" aria-hidden="true">${mark}</span><span class="label">${label}</span><span class="time">${time}</span>${showDetail ? `<span class="detail"></span>` : ''}</li>`;
+      });
+      const html = rows.join('');
+      if (wizard.dataset.html !== html) { wizard.innerHTML = html; wizard.dataset.html = html; }
+      const detailNode = wizard.querySelector('.detail');
+      if (detailNode && detailNode.textContent !== detail) detailNode.textContent = detail;
+    }
     async function refresh() {
       try {
         const state = await invoke('startup_progress');
         document.getElementById('fields').disabled = submitting || state.status === 'working';
-        document.getElementById('heading').textContent = state.status === 'configure' ? 'Connect your app and API' : state.status === 'failed' ? 'Setup needs attention' : state.status === 'ready' ? 'Builder is ready' : 'Getting things ready';
-        document.getElementById('status').textContent = state.lines.at(-1) || 'Starting…';
+        document.getElementById('heading').textContent = state.status === 'configure' ? 'Connect your app and API' : state.status === 'failed' ? 'Setup needs attention' : state.status === 'ready' ? 'Builder is ready' : 'Setting up Builder';
+        document.getElementById('status').textContent = state.status === 'working' ? 'Step ' + (Math.max(0, state.steps.findIndex(([id]) => id === state.step)) + 1) + ' of ' + state.steps.length : (state.lines.at(-1) || 'Starting…');
+        renderWizard(state);
         const history = document.getElementById('history');
         const text = state.lines.join('\n');
         if (history.textContent !== text) {
@@ -112,6 +161,7 @@
           history.textContent = text;
           if (atBottom) history.scrollTop = history.scrollHeight;
         }
+        if (state.status === 'failed') document.getElementById('log').open = true;
         document.getElementById('path').textContent = state.log_path;
         details = text + '\n\nLog: ' + state.log_path;
         document.getElementById('timer').textContent = state.status === 'working' ? Math.floor((Date.now() - started) / 1000) + 's elapsed' : state.status === 'ready' ? 'Complete' : state.status === 'configure' ? 'Setup' : 'Stopped';
