@@ -23,6 +23,78 @@ runs it from the tray.
   VoipAppz Builder to the desktop menu; `install/install.sh --uninstall`
   removes it.
 
+## Windows: install and make your first change
+
+Builder is a pre-release for developers. The installer is not code-signed yet
+and has no automatic updates.
+
+**Before you start**
+
+- Windows 10 or 11, 64-bit, with internet access for the first run.
+- A Git checkout of the VoipAppz React app (`voipappz/app`) on this computer.
+  Builder makes its own worktree next to it, `<app folder>-builder`, on the
+  branch `builder/work`.
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and
+  signed in (run `claude` once in a terminal). The agent runs on your Claude
+  account.
+- A VoipAppz account on `https://switch.voipappz.io` to sign in to the
+  previews. Node.js is not required: Builder installs the version the app needs.
+
+**Install**
+
+1. Download `VoipAppz.Builder_<version>_x64-setup.exe` from the
+   [releases](https://github.com/voipappz/builder/releases).
+2. Run it. If Windows shows **Windows protected your PC**, select **More
+   info**, then **Run anyway**.
+3. Start **VoipAppz Builder** from the Start menu. It runs from the system
+   tray and opens a setup window.
+
+**First start**
+
+1. Under **React app**, choose the folder of your `voipappz/app` checkout.
+2. Leave the **API address** as `https://switch.voipappz.io`, or enter another
+   HTTPS address.
+3. Optional: enter your API email and password so the agent gets read-only
+   platform tools (extensions, numbers, call logs). Leave both empty to skip.
+4. Select **Check**; you should see **API is reachable**.
+5. Select **Start**. The window shows each step: installing Node, installing
+   the app's packages, starting the app, starting the agent. The first run can
+   take several minutes.
+6. When setup finishes, your browser opens the Builder page: chat on one side,
+   Admin and User previews on the other. Sign in to each preview with your
+   VoipAppz account.
+
+**Make your first change**
+
+1. In the chat, describe the change, for example: *Add a search field above
+   the extensions table.*
+2. The agent reads the app's source and edits it. Edits inside the worktree
+   are applied without asking; a command the agent wants to run asks first.
+3. The previews reload on their own. Check the Admin preview, then ask for a
+   refinement or say what to undo.
+4. Your changes are files in the worktree on `builder/work`. Review them with
+   Git, then commit and push or merge as usual.
+
+**Where things are**
+
+- Settings: `%APPDATA%\voipappz-builder\builder.toml`.
+- Logs: `%LOCALAPPDATA%\voipappz-builder\builder.log` and `app.log`.
+- Tray menu: **Open VoipAppz Builder**, **Connect App and API…**,
+  **Settings**, **View Logs**, **Restart**, **Quit VoipAppz Builder**. Closing
+  the setup window leaves Builder running in the tray.
+
+**If it doesn't work**
+
+- "Use an HTTPS API address": only localhost may use plain `http://`.
+- "Could not reach the API": check the address in a browser and your
+  connection.
+- Setup stops with an error: the window keeps the details and the log
+  location. Use **Copy details** when reporting it.
+- The chat does not answer: make sure Claude Code is signed in (`claude` in a
+  terminal) and your Claude account has quota left.
+- The previews are empty: another program may be using port 3000. Stop it and
+  **Restart** Builder from the tray.
+
 ## Run it (development)
 
 ```text
@@ -76,7 +148,8 @@ reporting a problem. Closing that window leaves Builder running in the tray.
   anywhere else.
 - The VoipAppz API is read-only for the agent: Builder proxies its MCP tools
   and refuses the ones that change the platform.
-- The first API target is the local API (`voipappz-api`, `make dev`).
+- The default API is `https://switch.voipappz.io`; a local API
+  (`voipappz-api`, `make dev`) can be chosen instead.
 
 ## Related repositories
 
