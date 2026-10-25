@@ -108,19 +108,15 @@ Decisions recorded 2026-10-23:
 
 Decisions recorded 2026-10-25:
 
-- **One codebase: the React app, also for mobile.** Builder edits
-  `voipappz/app` only. The app is already designed for mobile (responsive
-  MUI layouts), so there is no separate mobile UI to write; mobile is a
-  Capacitor shell around the same app
-  (`voipappz/mobile` already starts from `@capacitor/core` 6 and has no
-  other code). Kotlin Multiplatform is not used: it would be a second UI
-  codebase the agent cannot preview in a browser, with minutes-long native
-  builds and no iOS build on Windows. Revisit only if a native need (deep
-  CallKit/ConnectionService work) cannot be met from the Capacitor shell,
-  and then as native shell plus web UI, which is still Capacitor.
-- **Mobile preview in Builder.** A third preview, Mobile, is the user
-  portal in a phone-sized frame of the same dev server. No native build is
-  involved in the chat loop; native builds are a CI step.
+- **Web only, one codebase.** Builder edits `voipappz/app` only. The app
+  is already designed for phones (responsive MUI layouts) and is used in
+  the browser there; no native app is built. No Capacitor or Ionic shell,
+  no Kotlin Multiplatform, no React Native: each would add a second
+  codebase or build the agent cannot preview with HMR in a browser.
+  `voipappz/mobile` (an empty Capacitor start) is not part of the plan.
+- **Phone-width preview in Builder.** A third preview frame shows the user
+  portal at phone size from the same dev server, so "on mobile" requests
+  can be checked in the chat loop. It is a browser frame, nothing more.
 - **Deploy through CI, not from the customer's machine.** Builder commits
   and pushes `builder/work`; a GitHub Actions workflow builds the image and
   runs `kamal deploy` to a destination. Local Kamal (Ruby, Docker, SSH) is
@@ -132,14 +128,13 @@ Decisions recorded 2026-10-25:
 | Step | Deliverable | Acceptance check |
 |---|---|---|
 | M1. Local stack test loop | Builder (Windows or WSL) against `voipappz-api` `make dev` + `make tenant` at `http://localhost:<VA_WEB_PORT>`, with a voice node from `voipappz/installer` registered to it | One chat turn reads real tenant data through `/api/mcp` and edits a screen that shows it; nothing touches `switch.voipappz.io` |
-| M2. Mobile preview | `core/src/builder.rs` adds `previews.mobile` (`mobile.localhost:<port>`, its own origin and login, same dev server); the app's `src/builder-client/BuilderApp.jsx` renders it in a 390×844 frame with a device bezel and a rotate control | "Make the call history easier to read on mobile" shows its result in the Mobile frame without a rebuild; Admin and User frames are unchanged |
-| M3. Capacitor shell | `voipappz/mobile` holds the Capacitor project that loads the app build; Android and iOS builds in GitHub Actions (fastlane), artifacts attached to the run | A commit on `builder/work` produces an installable Android build from CI; the same screens as the Mobile preview |
-| M4. Deploy from chat | `config/deploy.yml` gets a real staging destination; `.github/workflows/deploy.yml` with a `destination` input runs `kamal deploy`; Builder's **Deploy** action commits, pushes, triggers the workflow and shows its steps in the setup-style checklist with the resulting URL and commit | A change made in chat is live on the staging URL after one click; the page names the deployed commit; a failed deploy shows the workflow's error, never a stale URL as live |
-| M5. Second agent, local model | Settings `agent_command` gains a picker: Claude Code (default), Codex (ACP adapter), Goose with Ollama; a one-day conformance check of each adapter against the chat client (permission requests, `tool_call` updates, cancel, session reload) | The same request completes on Claude and on one local model with the diffs reviewed side by side; an adapter that fails the conformance check is not offered |
-| M6. WSL mode for the Windows app | A checkout under `\\wsl.localhost\<distro>` is offered as "Run in WSL": git, npm, the dev server and the agent run through `wsl.exe -d <distro> --cd <path>`; settings keep both path forms; `writable_in` maps Linux paths to the UNC root | Setup, a chat edit and HMR work with the checkout inside WSL; an edit outside the mapped root is refused as on Windows paths |
+| M2. Phone-width preview | `core/src/builder.rs` adds `previews.mobile` (`mobile.localhost:<port>`, its own origin and login, same dev server); the app's `src/builder-client/BuilderApp.jsx` renders it in a 390×844 frame with a rotate control | "Make the call history easier to read on mobile" shows its result in the phone frame without a rebuild; Admin and User frames are unchanged |
+| M3. Deploy from chat | `config/deploy.yml` gets a real staging destination; `.github/workflows/deploy.yml` with a `destination` input runs `kamal deploy`; Builder's **Deploy** action commits, pushes, triggers the workflow and shows its steps in the setup-style checklist with the resulting URL and commit | A change made in chat is live on the staging URL after one click; the page names the deployed commit; a failed deploy shows the workflow's error, never a stale URL as live |
+| M4. Second agent, local model | Settings `agent_command` gains a picker: Claude Code (default), Codex (ACP adapter), Goose with Ollama; a one-day conformance check of each adapter against the chat client (permission requests, `tool_call` updates, cancel, session reload) | The same request completes on Claude and on one local model with the diffs reviewed side by side; an adapter that fails the conformance check is not offered |
+| M5. WSL mode for the Windows app | A checkout under `\\wsl.localhost\<distro>` is offered as "Run in WSL": git, npm, the dev server and the agent run through `wsl.exe -d <distro> --cd <path>`; settings keep both path forms; `writable_in` maps Linux paths to the UNC root | Setup, a chat edit and HMR work with the checkout inside WSL; an edit outside the mapped root is refused as on Windows paths |
 
-Order: M1, then M2 and M4 (both small, both visible), then M3, M5, M6.
-M1 is also where `/dev/mcp` (above) is first testable. M5 decides whether a
+Order: M1, then M2 and M3 (both small, both visible), then M4, M5.
+M1 is also where `/dev/mcp` (above) is first testable. M4 decides whether a
 VoipAppz-hosted model (vLLM behind Kamal) is worth building.
 
 ## Existing work this plan builds on (surveyed 2026-10-23)
