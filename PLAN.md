@@ -133,6 +133,27 @@ Decisions recorded 2026-10-25:
 | M4. Second agent, local model | Settings `agent_command` gains a picker: Claude Code (default), Codex (ACP adapter), Goose with Ollama; a one-day conformance check of each adapter against the chat client (permission requests, `tool_call` updates, cancel, session reload) | The same request completes on Claude and on one local model with the diffs reviewed side by side; an adapter that fails the conformance check is not offered |
 | M5. WSL mode for the Windows app | A checkout under `\\wsl.localhost\<distro>` is offered as "Run in WSL": git, npm, the dev server and the agent run through `wsl.exe -d <distro> --cd <path>`; settings keep both path forms; `writable_in` maps Linux paths to the UNC root | Setup, a chat edit and HMR work with the checkout inside WSL; an edit outside the mapped root is refused as on Windows paths |
 
+**v0.2.0 (agreed 2026-10-26): Builder runs the app's Makefile, nothing else.**
+The Rust app runs no Node. It calls the app's own targets in its worktree
+(through `wsl.exe --cd <path>` on Windows):
+
+| Builder action | App target | Notes |
+|---|---|---|
+| Pre-flight | none | Disk space, folder (Git, WSL or local), WSL/bash/make, ports, another Builder running, API reachable, Claude signed in. Shown before Start; red items block it, each with a fix button |
+| First run | `make setup` | Opens a terminal when the login gate asks for credentials |
+| Start the app | `make dev PORT=<free port>` | Replaces Rust's mise, npm ci and Vite code |
+| Test | `make test [SPEC=x]` | The app's Playwright e2e suite, run on demand from the chat page; results shown with the failing spec names |
+| Check | `make check` | Lint, unit tests and a build before a deploy |
+| Deploy | `make deploy DEST=<dest>` | Kamal through Docker. Builder asks for confirmation every time, names the destination and commit, and shows the post-deploy smoke checks; it needs `.kamal/env.<dest>`, SSH keys and Docker, all of which pre-flight checks |
+| Agent | `bin/npm.sh exec -- claude-agent-acp` | The adapter becomes an app devDependency |
+
+Acceptance: on Windows, through WSL, setup runs `make dev`, one chat turn
+edits a screen, `make test SPEC=<that screen>` passes from Builder, and
+`make deploy DEST=connectix` (after confirmation) puts the change live with
+green smoke checks. Builder's own e2e in CI: start Builder with a stub
+agent and a stub `make`, drive the setup and the chat page with
+Playwright, and assert each target was called with the right arguments.
+
 Order: M1, then M2 and M3 (both small, both visible), then M4, M5.
 M1 is also where `/dev/mcp` (above) is first testable. M4 decides whether a
 VoipAppz-hosted model (vLLM behind Kamal) is worth building.
