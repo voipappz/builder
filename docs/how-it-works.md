@@ -28,19 +28,22 @@ Browser tab  http://127.0.0.1:9832/?secret=…
 | Agent | Claude Code via `@agentclientprotocol/claude-agent-acp` | Reads and edits the app, on the user's own Claude account |
 
 The chat screen is app code, so a chat change ships with the app. The local
-server does what a web page cannot: start programs, read files, run `npm`.
+server does what a web page cannot: start programs and read files. It runs
+no Node itself; everything Node is the app's Makefile.
 
 ## What happens on start
 
-1. Read settings and the user's login-shell environment (so `npm` and `npx`
-   are found when started from a menu).
+1. Read settings and the user's login-shell environment (so `make` and the
+   app's tools are found when started from a menu), then run the pre-flight
+   checks: app folder, `git`/`make`/`bash`/`curl`, disk space, ports, API.
 2. Use Builder's own worktree of the app repository: `../app-builder` on
    branch `builder/work`, created from `origin/main` the first time. Your own
-   `../app` checkout is never touched. `node_modules` is linked from `../app`
-   when the lockfiles match, else `npm ci` runs.
+   `../app` checkout is never touched. If its packages are not installed,
+   run `make setup` there.
 3. Write the worktree's `.env` once so the app's API proxy uses the same API
    as the agent (an existing `.env` is never changed).
-4. Start `npm run dev` in the worktree if the chat address does not answer.
+4. Run `make dev PORT=<free port>` in the worktree if the chat address does
+   not answer.
 5. If the API answers and the login works, offer its MCP tools read-only.
 6. Start the server on 127.0.0.1 with a new launch secret and open the page.
 

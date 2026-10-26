@@ -40,7 +40,7 @@ dirs = "5.0"
 portable-pty = "0.9"
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["winbase", "jobapi2", "winnt", "processthreadsapi", "handleapi", "errhandlingapi"] }
+winapi = { version = "0.3", features = ["winbase", "jobapi2", "winnt", "processthreadsapi", "handleapi", "errhandlingapi", "fileapi"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -29,7 +29,7 @@ struct Cli {
     #[arg(long, env = "VOIPAPPZ_BUILDER_PREVIEW_URL")]
     preview_url: Option<String>,
 
-    /// Start `npm run dev` in the workspace when the client does not answer.
+    /// Start the app (`make dev`) in the workspace when the client does not answer.
     #[arg(long)]
     start_app: bool,
 

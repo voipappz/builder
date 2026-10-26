@@ -17,7 +17,8 @@ use tracing::{error, info};
 struct AppState {
     running: Mutex<Option<Running>>,
     startup: std::sync::Mutex<StartupProgress>,
-    api_login: std::sync::Mutex<Option<(String, String)>>,
+    /// The API login from onboarding, for the API URL it was checked against.
+    api_login: std::sync::Mutex<Option<(String, launcher::ApiLogin)>>,
 }
 
 #[tauri::command]
@@ -41,44 +42,18 @@ async fn onboarding_start(app: AppHandle, app_repo: String, api_url: String, api
     let settings = launcher::onboarding_settings(Settings::load()?, &app_repo, &api_url, &api_dir)?;
     let url = settings.api_url.clone().ok_or("Choose an API address.")?;
     launcher::check_api_connection(&url, &email, &password).await?;
-    let basic = if email.is_empty() && password.is_empty() { None }
-        else { Some((url, launcher::api_credential(&email, &password)?)) };
+    let login = if email.is_empty() && password.is_empty() { None } else {
+        launcher::api_credential(&email, &password)?;
+        Some((url, launcher::ApiLogin { email: email.trim().to_string(), password }))
+    };
     {
         let state = app.state::<AppState>();
         let _guard = state.running.try_lock().map_err(|_| "Setup is already running. Follow its progress below.")?;
         settings.save()?;
-        *state.api_login.lock().unwrap_or_else(|e| e.into_inner()) = basic;
+        *state.api_login.lock().unwrap_or_else(|e| e.into_inner()) = login;
     }
     tauri::async_runtime::spawn(restart(app));
     Ok(())
-}
-
-/// Open a console window running Claude's sign-in (it needs a terminal and a
-/// browser), using the binary Builder installed with the coding agent.
-#[tauri::command]
-fn claude_login() -> Result<String, String> {
-    let binary = launcher::claude_binary();
-    if !binary.is_file() {
-        return Err("The coding agent is not installed yet. Start setup first; sign-in comes after the agent is installed.".into());
-    }
-    let mut command = if cfg!(target_os = "windows") {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/c", "start", "Claude sign-in for VoipAppz Builder", "cmd", "/k"]).arg(&binary).args(["auth", "login"]);
-        c
-    } else if cfg!(target_os = "macos") {
-        let mut c = std::process::Command::new("osascript");
-        c.arg("-e").arg(format!("tell application \"Terminal\" to do script \"{} auth login\"", binary.display()));
-        c
-    } else {
-        let terminal = ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"].into_iter()
-            .find(|t| which::which(t).is_ok()).ok_or("No terminal program found. Run in a terminal: claude auth login")?;
-        let mut c = std::process::Command::new(terminal);
-        if terminal == "gnome-terminal" { c.arg("--"); } else { c.arg("-e"); }
-        c.arg(&binary).args(["auth", "login"]);
-        c
-    };
-    command.spawn().map_err(|e| format!("Could not open a console for sign-in: {e}"))?;
-    Ok("A console window opened. Finish signing in there (a browser tab opens), then choose Restart Builder.".into())
 }
 
 #[tauri::command]
@@ -269,9 +244,9 @@ async fn restart(app: AppHandle) {
         progress(&app, "Choose your React app folder and API address above.", "configure");
         return;
     }
-    let basic = state.api_login.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
-        .filter(|(url, _)| settings.api_url.as_ref() == Some(url)).map(|(_, basic)| basic.clone());
-    match launcher::start_with_api_credential(&settings, basic, |line| progress(&app, line, "working")).await {
+    let login = state.api_login.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+        .filter(|(url, _)| settings.api_url.as_ref() == Some(url)).map(|(_, login)| login.clone());
+    match launcher::start_with_api_credential(&settings, login, |line| progress(&app, line, "working")).await {
         Ok(started) => {
             info!("Builder is running; {}", started.api_note);
             progress(&app, "Builder is ready. Opening your browser. You can close this setup window.", "ready");
@@ -307,7 +282,7 @@ pub fn run() {
     let _log_guard = init_logging();
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![startup_progress, onboarding_info, onboarding_folder, onboarding_check, onboarding_start, claude_login, restart_builder])
+        .invoke_handler(tauri::generate_handler![startup_progress, onboarding_info, onboarding_folder, onboarding_check, onboarding_start, restart_builder])
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tauri::async_runtime::spawn(open_page(app.clone()));
         }))

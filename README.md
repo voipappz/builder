@@ -126,22 +126,21 @@ cargo run -p builder-cli -- --app-repo ../app --start-app --api-dir ../voipappz-
 
 Builder works on the app repository (`../app`) in its own git worktree,
 `../app-builder` on branch `builder/work`, created from `origin/main` on first
-start, so your own checkout is never touched. It links `node_modules` from
-`../app` (or runs `npm ci`), starts the app's dev server there, which serves
-the chat and the previews, and, when the local API answers, gives the agent
-its `/api/mcp` tools with the login `make claude` uses. The agent edits files
-without asking (its "Accept edits" mode) and asks before running commands.
+start, so your own checkout is never touched. Builder runs no Node itself: it
+runs the app's own Makefile there, `make setup` the first time (Node through
+mise, packages, login) and `make dev PORT=<port>`, which serves the chat and
+the previews. When the API answers, it gives the agent its `/api/mcp` tools
+read-only. The agent edits files without asking (its "Accept edits" mode) and
+asks before running commands.
 
-Claude Code must be signed in (`claude`) on this machine.
+Claude Code must be signed in (`claude`) on this machine. The app's login
+gate reads `TEST_EMAIL`/`TEST_PASSWORD` from the environment or the
+worktree's `.env`; the desktop app passes the API login typed in onboarding.
 
-Builder checks Node and npm at startup. If either is missing, or Node is too
-old, it uses mise to install the Node version in the app's
-`mise.toml` (22 by default). The resulting PATH is shared by package installation,
-the dev server, and the agent. If mise is missing, Builder downloads its
-[official installer](https://mise.jdx.dev/installing-mise.html) and installs a
-private copy under Builder's state directory. First-run setup requires internet
-access; no preinstalled npm or mise, administrator access, or shell activation
-is needed. Setup progress and download/install failures appear in the launcher.
+Before setup, Builder runs pre-flight checks and shows each result: the app
+folder (a checkout with a Makefile, not on WSL or a share), `git`, `make`,
+`bash` and `curl`, free disk space, the app and Builder ports, and whether
+the API answers. A failed check stops setup with the reason.
 
 The desktop app shows a setup window with the current step, elapsed time and
 recent progress. Long installs report every five seconds. If setup fails, the

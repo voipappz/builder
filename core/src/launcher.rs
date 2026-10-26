@@ -19,103 +19,132 @@ pub const DEFAULT_AGENT_COMMAND: &str = "npx -y @agentclientprotocol/claude-agen
 /// Setup steps, in order, as `(id, label)`. `start` reports entering a step
 /// with a progress line of `STEP_PREFIX` followed by the id, so a UI can
 /// show a checklist; other lines are details for the current step.
+///
+/// Builder runs no Node itself: the app's own Makefile installs its tools
+/// and packages (`make setup`) and starts it (`make dev`).
 pub const SETUP_STEPS: &[(&str, &str)] = &[
-    ("env", "Read your environment"),
-    ("node", "Node.js and npm"),
+    ("check", "Pre-flight checks"),
     ("workspace", "App working copy"),
-    ("packages", "App packages"),
-    ("app", "App dev server"),
+    ("setup", "App setup (make setup)"),
+    ("app", "App dev server (make dev)"),
     ("api", "API connection"),
-    ("agent", "Coding agent"),
     ("server", "Builder connection"),
 ];
 pub const STEP_PREFIX: &str = "@step ";
 
-/// The ACP adapter for Claude Code, installed by Builder into its own folder
-/// so the Claude binary for this computer is known to be there and its
-/// sign-in can be checked, instead of trusting npx's cache.
-pub const ADAPTER_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp@0.94.0";
-
-/// Where Builder installs the adapter: `<state dir>/agent`.
-pub fn agent_dir() -> PathBuf {
-    state_dir().join("agent")
-}
-
-/// The npm package holding Claude Code's native binary for this computer,
-/// for example `claude-agent-sdk-win32-x64`.
-pub fn claude_platform_package() -> String {
-    let os = match std::env::consts::OS { "windows" => "win32", "macos" => "darwin", other => other };
-    let arch = match std::env::consts::ARCH { "x86_64" => "x64", "aarch64" => "arm64", other => other };
-    format!("claude-agent-sdk-{os}-{arch}")
-}
-
-/// Claude Code's binary inside Builder's adapter install.
-pub fn claude_binary() -> PathBuf {
-    let name = if cfg!(windows) { "claude.exe" } else { "claude" };
-    agent_dir().join("node_modules/@anthropic-ai").join(claude_platform_package()).join(name)
-}
-
-fn adapter_entry() -> PathBuf {
-    agent_dir().join("node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js")
-}
-
-/// The shell command that starts the installed adapter.
-pub fn agent_command_for(entry: &Path) -> String {
-    format!("node \"{}\"", entry.display())
-}
-
-/// Install the adapter (once) and check that Claude is signed in on this
-/// computer. Returns the agent command for the server.
-async fn ensure_agent(
-    settings: &Settings,
-    cwd: &Path,
-    env: &HashMap<String, String>,
-    progress: &impl Fn(&str),
-) -> Result<String, String> {
-    progress("@step agent");
-    if settings.agent_command != DEFAULT_AGENT_COMMAND {
-        progress(&format!("Using the agent command from settings: {}", settings.agent_command));
-        return Ok(settings.agent_command.clone());
-    }
-    let dir = agent_dir();
-    let (entry, binary) = (adapter_entry(), claude_binary());
-    if !entry.is_file() || !binary.is_file() {
-        std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
-        let prefix = dir.to_string_lossy().into_owned();
-        progress(&format!("Installing the coding agent ({ADAPTER_PACKAGE}) into {}…", dir.display()));
-        let args = ["install", "--prefix", &prefix, "--no-audit", "--no-fund", "--omit=dev", ADAPTER_PACKAGE];
-        let install = || run("npm", &args, &dir, env);
-        if let Err(first) = report_progress("Installing the coding agent; the first time downloads about 150 MB", progress, install()).await {
-            progress(&format!("The first install attempt failed; retrying once. {}", first.lines().next().unwrap_or_default()));
-            report_progress("Installing the coding agent, second attempt", progress, install()).await
-                .map_err(|second| format!("{second}\n\nFirst attempt: {first}"))?;
-        }
-        if !binary.is_file() {
-            return Err(format!(
-                "The coding agent was installed but Claude's binary for this computer ({}) is missing at {}. \
-                 This happens when the disk is full during installation: free some space and restart Builder.",
-                claude_platform_package(), binary.display()));
-        }
-    }
-    progress(&format!("Coding agent: {}", entry.display()));
-    let status = run(&binary.to_string_lossy(), &["auth", "status"], cwd, env).await
-        .map_err(|e| format!("Claude could not report its sign-in state: {e}"))?;
-    let logged_in = serde_json::from_str::<serde_json::Value>(&status).ok()
-        .and_then(|v| v.get("loggedIn").and_then(|b| b.as_bool()))
-        .unwrap_or(false);
-    if !logged_in {
-        return Err(format!(
-            "Claude is not signed in on this computer, so the coding agent cannot run. \
-             Use \"Sign in to Claude\" in the setup window (or run: {} auth login), then restart Builder.",
-            binary.display()));
-    }
-    progress("Claude is signed in; the coding agent is ready.");
-    Ok(agent_command_for(&entry))
-}
-
 pub fn step_label(id: &str) -> Option<&'static str> {
     SETUP_STEPS.iter().find(|(step, _)| *step == id).map(|(_, label)| *label)
 }
+
+/// Disk space setup needs: packages, the Playwright browser and the agent.
+const MIN_FREE_BYTES: u64 = 3 * 1024 * 1024 * 1024;
+
+/// The API login typed in onboarding. The app's login gate (`make setup`,
+/// `make dev`) reads it as TEST_EMAIL and TEST_PASSWORD; the agent never
+/// sees it.
+#[derive(Clone)]
+pub struct ApiLogin {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Level { Ok, Warn, Fail }
+
+/// One pre-flight result: shown before setup runs; a `Fail` stops setup.
+#[derive(Debug, Clone, Serialize)]
+pub struct Check {
+    pub label: String,
+    pub level: Level,
+    pub detail: String,
+}
+
+impl Check {
+    fn new(label: &str, level: Level, detail: impl Into<String>) -> Self {
+        Self { label: label.into(), level, detail: detail.into() }
+    }
+    pub fn line(&self) -> String {
+        let mark = match self.level { Level::Ok => "✓", Level::Warn => "⚠", Level::Fail => "✕" };
+        format!("{mark} {}: {}", self.label, self.detail)
+    }
+}
+
+/// Free bytes on the volume holding `path`.
+pub fn free_bytes(path: &Path) -> Option<u64> {
+    let path = path.ancestors().find(|p| p.exists())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+        let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+        (unsafe { libc::statvfs(c.as_ptr(), &mut st) } == 0).then(|| st.f_bavail as u64 * st.f_frsize as u64)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut free: winapi::um::winnt::ULARGE_INTEGER = unsafe { std::mem::zeroed() };
+        let ok = unsafe { winapi::um::fileapi::GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut()) };
+        (ok != 0).then(|| unsafe { *free.QuadPart() })
+    }
+}
+
+/// What can be known before setup starts. Nothing here runs Node.
+pub async fn preflight(settings: &Settings, env: &HashMap<String, String>) -> Vec<Check> {
+    let mut checks = Vec::new();
+    let path = env.iter().find(|(k, _)| k.eq_ignore_ascii_case("PATH")).map(|(_, v)| v.clone());
+    let cwd = std::env::temp_dir();
+    let found = |tool: &str| which::which_in(tool, path.as_ref(), &cwd).is_ok();
+
+    let repo = settings.app_repo.as_deref().or(settings.workspace.as_deref());
+    match repo {
+        None => checks.push(Check::new("App folder", Level::Fail, "Choose the voipappz/app checkout.")),
+        Some(repo) if is_network_path(&repo.to_string_lossy()) || repo.to_string_lossy().starts_with(r"\\?\UNC") =>
+            checks.push(Check::new("App folder", Level::Fail, format!("{} is on WSL or a network share; Builder cannot run the app there yet.", repo.display()))),
+        Some(repo) if !repo.join("Makefile").is_file() || !repo.join("package.json").is_file() =>
+            checks.push(Check::new("App folder", Level::Fail, format!("{} has no Makefile and package.json; choose the voipappz/app checkout.", repo.display()))),
+        Some(repo) => checks.push(Check::new("App folder", Level::Ok, repo.display().to_string())),
+    }
+
+    for (tool, why) in [("git", "Builder makes its working copy with git"), ("make", "Builder runs the app with its Makefile"), ("bash", "the app's Makefile needs bash"), ("curl", "the app's Makefile needs curl")] {
+        if found(tool) {
+            checks.push(Check::new(tool, Level::Ok, "found"));
+        } else {
+            let hint = if cfg!(windows) { " On Windows, the app runs through WSL; that mode is not available yet." } else { "" };
+            checks.push(Check::new(tool, Level::Fail, format!("not found; {why}.{hint}")));
+        }
+    }
+
+    let disk = repo.map(Path::to_path_buf).unwrap_or_else(state_dir);
+    match free_bytes(&disk) {
+        Some(free) if free < MIN_FREE_BYTES => checks.push(Check::new("Disk space", Level::Fail,
+            format!("{} MB free; setup needs about {} MB. Free some space and retry.", free / 1_048_576, MIN_FREE_BYTES / 1_048_576))),
+        Some(free) => checks.push(Check::new("Disk space", Level::Ok, format!("{} GB free", free / 1_073_741_824))),
+        None => checks.push(Check::new("Disk space", Level::Warn, "could not be measured")),
+    }
+
+    let wanted = url_port(&settings.client_url).unwrap_or(3000);
+    match free_port(wanted).await {
+        Some(port) if port == wanted => checks.push(Check::new("App port", Level::Ok, format!("{port} is free"))),
+        Some(port) => checks.push(Check::new("App port", Level::Warn, format!("{wanted} is taken (another app, or WSL); the app will use {port}"))),
+        None => checks.push(Check::new("App port", Level::Fail, format!("no free port between {wanted} and {}", wanted + 19))),
+    }
+    match free_port(settings.port).await {
+        Some(port) if port == settings.port => checks.push(Check::new("Builder port", Level::Ok, format!("{port} is free"))),
+        Some(port) => checks.push(Check::new("Builder port", Level::Warn, format!("{} is taken (another Builder?); using {port}", settings.port))),
+        None => checks.push(Check::new("Builder port", Level::Fail, format!("no free port from {}", settings.port))),
+    }
+
+    if let Some(api) = settings.api_url.as_deref() {
+        let reachable = reqwest::Client::builder().timeout(Duration::from_secs(8)).build().ok();
+        let answer = match reachable { Some(c) => c.get(api).send().await.is_ok(), None => false };
+        checks.push(if answer { Check::new("API", Level::Ok, format!("{api} answers")) }
+            else { Check::new("API", Level::Warn, format!("{api} does not answer; the previews will not sign in")) });
+    }
+    checks
+}
+
 const DEV_SERVER_WAIT: Duration = Duration::from_secs(90);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -382,25 +411,18 @@ impl Running {
 }
 
 fn start_dev_server(workspace: &Path, env: HashMap<String, String>, port: u16) -> Result<ChildProcess, String> {
-    if !workspace.join("node_modules").exists() {
-        return Err(format!(
-            "{} has no node_modules; run npm install there first",
-            workspace.display()
-        ));
-    }
     let log_dir = state_dir();
     std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
     let log = std::fs::File::create(log_dir.join("app.log")).map_err(|e| e.to_string())?;
     let log_err = log.try_clone().map_err(|e| e.to_string())?;
-    // The app's dev script fixes a port; the later --port wins, and
-    // --strictPort stops Vite from silently moving to another one.
-    let script = format!("npm run dev -- --port {port} --strictPort");
+    // The app's own target: its login gate, then its dev server on `port`.
+    let script = format!("make dev PORT={port}");
     let mut command = create_shell_command(&script, env, &workspace.to_string_lossy(), None);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));
-    spawn_command(command).map_err(|e| format!("could not start npm run dev: {}", e))
+    spawn_command(command).map_err(|e| format!("could not start make dev: {}", e))
 }
 
 /// Builder's worktree next to the app repository: `../app` -> `../app-builder`.
@@ -434,16 +456,6 @@ async fn run(program: &str, args: &[&str], cwd: &Path, env: &HashMap<String, Str
 
 async fn run_with_timeout(program: &str, args: &[&str], cwd: &Path, env: &HashMap<String, String>, limit: Duration) -> Result<String, String> {
     use tokio::io::AsyncReadExt;
-    // npm ships as npm.cmd on Windows and must run through cmd.exe.
-    #[cfg(windows)]
-    let mut command = if program == "npm" {
-        let mut command = tokio::process::Command::new("cmd.exe");
-        command.args(["/d", "/c", "npm"]);
-        command
-    } else {
-        tokio::process::Command::new(program)
-    };
-    #[cfg(not(windows))]
     let mut command = tokio::process::Command::new(program);
     command.args(args)
         .current_dir(cwd)
@@ -479,14 +491,6 @@ async fn run_with_timeout(program: &str, args: &[&str], cwd: &Path, env: &HashMa
     }
 }
 
-fn node_pin(repo: &Path) -> String {
-    std::fs::read_to_string(repo.join("mise.toml"))
-        .ok()
-        .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
-        .and_then(|value| value.get("tools")?.get("node")?.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "22".into())
-}
-
 async fn report_progress<T>(
     label: &str,
     progress: &impl Fn(&str),
@@ -509,123 +513,6 @@ async fn report_progress<T>(
             }
         }
     }
-}
-
-async fn install_mise(
-    destination: &Path,
-    script: &str,
-    env: &HashMap<String, String>,
-) -> Result<(), String> {
-    let parent = destination.parent().ok_or("Invalid mise installation path")?;
-    tokio::fs::create_dir_all(parent).await.map_err(|e| format!("Create mise directory: {e}"))?;
-    let temporary = parent.join(format!("install-{}", uuid::Uuid::new_v4()));
-    tokio::fs::create_dir(&temporary).await.map_err(|e| format!("Create mise installer directory: {e}"))?;
-    let installer = temporary.join(if cfg!(windows) { "install.ps1" } else { "install.sh" });
-    let result = async {
-        tokio::fs::write(&installer, script).await.map_err(|e| format!("Save mise installer: {e}"))?;
-        let mut install_env = env.clone();
-        install_env.insert("MISE_INSTALL_PATH".into(), destination.to_string_lossy().into_owned());
-        install_env.insert("MISE_INSTALL_MODIFY_PATH".into(), "0".into());
-        install_env.insert("MISE_INSTALL_HELP".into(), "0".into());
-        let path = installer.to_string_lossy();
-        #[cfg(windows)]
-        run("powershell.exe", &["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", &path], parent, &install_env).await?;
-        #[cfg(not(windows))]
-        run("sh", &[&path], parent, &install_env).await?;
-        run(&destination.to_string_lossy(), &["--version"], parent, env).await
-            .map_err(|e| format!("mise installation did not produce a working executable: {e}"))?;
-        Ok(())
-    }.await;
-    let _ = tokio::fs::remove_file(&installer).await;
-    let _ = tokio::fs::remove_dir(&temporary).await;
-    result
-}
-
-/// The PATH variable's name in `env`: Windows spells it `Path`, and a
-/// second `PATH` entry would race it, so changes must reuse that name.
-fn path_key(env: &HashMap<String, String>) -> String {
-    env.keys().find(|k| k.eq_ignore_ascii_case("PATH")).cloned().unwrap_or_else(|| "PATH".into())
-}
-
-fn env_path(env: &HashMap<String, String>) -> Option<&String> {
-    env.get(&path_key(env))
-}
-
-/// Put `dir` first on PATH, keeping the variable's existing name.
-fn prepend_path(env: &mut HashMap<String, String>, dir: PathBuf) -> Result<(), String> {
-    let key = path_key(env);
-    let mut paths = vec![dir];
-    paths.extend(std::env::split_paths(env.get(&key).map(String::as_str).unwrap_or_default()));
-    let path = std::env::join_paths(paths).map_err(|e| format!("PATH: {e}"))?;
-    env.insert(key, path.to_string_lossy().into_owned());
-    Ok(())
-}
-
-async fn ensure_mise(
-    repo: &Path,
-    env: &HashMap<String, String>,
-    progress: &impl Fn(&str),
-) -> Result<PathBuf, String> {
-    let executable = if cfg!(windows) { "mise.exe" } else { "mise" };
-    let managed = state_dir().join("tools").join(executable);
-    let existing = which::which_in(executable, env_path(env), repo).ok()
-        .or_else(|| dirs::home_dir().map(|home| home.join(".local/bin").join(executable)).filter(|p| p.is_file()))
-        .or_else(|| managed.is_file().then(|| managed.clone()));
-    if let Some(path) = existing {
-        progress(&format!("Using mise: {}", path.display()));
-        return Ok(path);
-    }
-
-    progress("Installing mise for Builder (first run)…");
-    let url = if cfg!(windows) { "https://mise.run/powershell" } else { "https://mise.run" };
-    let script = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build().map_err(|e| format!("Create mise download client: {e}"))?
-        .get(url).send().await
-        .and_then(reqwest::Response::error_for_status)
-        .map_err(|e| format!("Could not download the mise installer. Check your internet connection and retry: {e}"))?
-        .text().await.map_err(|e| format!("Read mise installer: {e}"))?;
-    progress("mise installer downloaded successfully.");
-    report_progress("Installing mise; downloading and verifying its release", progress, install_mise(&managed, &script, env)).await
-        .map_err(|e| format!("Could not install mise for Builder: {e}"))?;
-    Ok(managed)
-}
-
-async fn ensure_node(
-    repo: &Path,
-    env: &mut HashMap<String, String>,
-    progress: &impl Fn(&str),
-) -> Result<(), String> {
-    let pin = node_pin(repo);
-    progress("@step node");
-    progress("Builder uses Node.js and npm to run your local app preview and install its packages. Missing tools will be set up automatically.");
-    progress(&format!("Checking Node.js and npm (required Node version: {pin})…"));
-    let version = run("node", &["--version"], repo, env).await.unwrap_or_default();
-    let major = version.trim_start_matches('v').split('.').next().and_then(|v| v.parse::<u32>().ok());
-    let required = pin.split('.').next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(22);
-    if major.is_some_and(|v| v >= required) && run("npm", &["--version"], repo, env).await.is_ok() {
-        progress(&format!("Node {version} and npm are already available."));
-        return Ok(());
-    }
-    let mise = ensure_mise(repo, env, progress).await?;
-    let mise = mise.to_string_lossy();
-    let tool = format!("node@{pin}");
-    // We already read the tool pin. Bootstrap must also work in a fresh,
-    // untrusted checkout without loading its mise hooks or environment.
-    let mut mise_env = env.clone();
-    mise_env.insert("MISE_NO_CONFIG".into(), "1".into());
-    progress(&format!("Installing Node {pin} and npm with mise…"));
-    report_progress("Installing Node.js and npm with mise; first setup may take several minutes", progress,
-        run(&mise, &["install", &tool], repo, &mise_env)).await?;
-    let location = run(&mise, &["where", &tool], repo, &mise_env).await?;
-    let bin = PathBuf::from(location);
-    #[cfg(not(windows))]
-    let bin = bin.join("bin");
-    prepend_path(env, bin)?;
-    run("npm", &["--version"], repo, env).await
-        .map_err(|e| format!("mise installed Node but npm is still unavailable: {e}"))?;
-    progress("Node.js and npm are ready.");
-    Ok(())
 }
 
 /// The checkout to work in: the configured workspace, or Builder's own
@@ -663,33 +550,17 @@ async fn ensure_workspace(
         .map_err(|e| format!("Workspace {}: {}", workspace.display(), e))?;
     progress(&format!("Workspace: {}", workspace.display()));
 
-    progress("@step packages");
-    // npm writes node_modules/.package-lock.json last; without it an earlier
-    // install was cut short and must run again.
+    progress("@step setup");
+    // npm writes node_modules/.package-lock.json last; without it the app's
+    // setup has not finished. `make setup` installs Node (mise), runs npm ci
+    // and checks the login; it is safe to run again.
     if !workspace.join("node_modules/.package-lock.json").is_file() {
-        let shared = app_repo.map(|r| r.join("node_modules")).filter(|p| p.is_dir());
-        let same_lock = app_repo.is_some_and(|r| {
-            std::fs::read(r.join("package-lock.json")).ok() == std::fs::read(workspace.join("package-lock.json")).ok()
-        });
-        match shared {
-            #[cfg(unix)]
-            Some(modules) if same_lock => {
-                std::os::unix::fs::symlink(&modules, workspace.join("node_modules"))
-                    .map_err(|e| format!("Could not link node_modules: {}", e))?;
-            }
-            _ => {
-                progress("Installing the app's packages (npm ci)…");
-                let install = || run("npm", &["ci", "--no-audit", "--no-fund"], &workspace, env);
-                if let Err(first) = report_progress("Installing app packages with npm ci; this can take several minutes", progress, install()).await {
-                    progress(&format!("The first npm ci attempt failed; retrying once (downloaded packages are reused). {}",
-                        first.lines().next().unwrap_or_default()));
-                    report_progress("Installing app packages with npm ci, second attempt", progress, install()).await
-                        .map_err(|second| format!("{second}\n\nFirst attempt: {first}"))?;
-                }
-            }
-        }
+        let setup = || run_with_timeout("make", &["setup"], &workspace, env, Duration::from_secs(20 * 60));
+        report_progress("Running the app's setup (make setup): Node, packages and login; the first time takes a few minutes", progress, setup()).await
+            .map_err(|e| format!("{e}\n\nThe app's setup failed. If it asks for a login, enter your API email and password in Builder's setup, \
+                or run `make setup` in {} in a terminal.", workspace.display()))?;
     }
-    progress("App packages are ready.");
+    progress("The app is set up.");
     Ok(workspace)
 }
 
@@ -712,27 +583,39 @@ pub async fn start(settings: &Settings, progress: impl Fn(&str)) -> Result<Runni
     start_with_api_credential(settings, None, progress).await
 }
 
-/// Credentials supplied by onboarding are kept in memory, outside settings and agent environment.
-pub async fn start_with_api_credential(settings: &Settings, basic: Option<String>, progress: impl Fn(&str)) -> Result<Running, String> {
-    // A menu-launched app does not get the terminal's PATH (nvm, mise,
-    // Homebrew); use what a login shell would have.
-    progress("@step env");
-    progress("Reading your shell environment…");
-    let env_dir = settings
-        .app_repo
-        .clone()
-        .or_else(|| settings.workspace.clone())
-        .filter(|p| p.is_dir())
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(std::env::temp_dir);
-    let mut env = crate::shell_env::capture_shell_env(&env_dir.to_string_lossy(), None)
-        .await
-        .unwrap_or_else(|e| {
-            warn!("Shell environment capture failed, using the process environment: {}", e);
-            std::env::vars().collect()
-        });
+/// The shell environment a menu-launched app lacks (nvm, mise, Homebrew).
+pub async fn shell_env(settings: &Settings) -> HashMap<String, String> {
+    let env_dir = settings.app_repo.clone().or_else(|| settings.workspace.clone())
+        .filter(|p| p.is_dir()).or_else(dirs::home_dir).unwrap_or_else(std::env::temp_dir);
+    crate::shell_env::capture_shell_env(&env_dir.to_string_lossy(), None).await.unwrap_or_else(|e| {
+        warn!("Shell environment capture failed, using the process environment: {}", e);
+        std::env::vars().collect()
+    })
+}
 
-    ensure_node(&env_dir, &mut env, &progress).await?;
+/// Credentials supplied by onboarding are kept in memory, outside settings and agent environment.
+pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLogin>, progress: impl Fn(&str)) -> Result<Running, String> {
+    progress("@step check");
+    progress("Reading your shell environment…");
+    let mut env = shell_env(settings).await;
+    let checks = preflight(settings, &env).await;
+    for check in &checks {
+        progress(&check.line());
+    }
+    let failed: Vec<String> = checks.iter().filter(|c| c.level == Level::Fail).map(Check::line).collect();
+    if !failed.is_empty() {
+        return Err(format!("Pre-flight checks failed:\n{}", failed.join("\n")));
+    }
+    // For the app's login gate only; removed from the agent's environment below.
+    let basic = match &login {
+        Some(l) => Some(api_credential(&l.email, &l.password)?),
+        None => None,
+    };
+    if let Some(l) = &login {
+        env.insert("TEST_EMAIL".into(), l.email.clone());
+        env.insert("TEST_PASSWORD".into(), l.password.clone());
+    }
+
     let workspace = ensure_workspace(settings, &env, &progress).await?;
     let api_url = settings
         .api_url
@@ -775,15 +658,17 @@ pub async fn start_with_api_credential(settings: &Settings, basic: Option<String
             if preview_url == client_url { preview_url = with_port(&preview_url, port); }
             client_url = with_port(&client_url, port);
         }
-        progress(&format!("Starting the app dev server (npm run dev, port {port})…"));
+        progress(&format!("Starting the app (make dev PORT={port})…"));
         dev_server = Some(start_dev_server(&workspace, env.clone(), port)?);
         let deadline = tokio::time::Instant::now() + DEV_SERVER_WAIT;
         let mut next_update = tokio::time::Instant::now();
         while !answers(&client_url).await {
             if let Some(status) = dev_server.as_mut().unwrap().child.try_wait()
                 .map_err(|e| format!("Could not check the app process: {e}"))? {
-                return Err(format!("The app stopped before it was ready ({status}). See {}",
-                    state_dir().join("app.log").display()));
+                let log = std::fs::read_to_string(state_dir().join("app.log")).unwrap_or_default();
+                let tail: Vec<&str> = log.lines().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect();
+                return Err(format!("make dev stopped before the app was ready ({status}):\n{}\n\nSee {}",
+                    tail.join("\n"), state_dir().join("app.log").display()));
             }
             if tokio::time::Instant::now() >= next_update {
                 progress(&format!("Waiting for the app at {client_url}; startup limit is {} seconds. Details: {}",
@@ -822,7 +707,6 @@ pub async fn start_with_api_credential(settings: &Settings, basic: Option<String
     };
 
     progress(&api_note);
-    let agent_command = ensure_agent(settings, &workspace, &env, &progress).await?;
     progress("@step server");
     progress("Starting Builder's local connection…");
 
@@ -836,8 +720,8 @@ pub async fn start_with_api_credential(settings: &Settings, basic: Option<String
         secret: BuilderConfig::new_secret(),
         workspace: workspace.clone(),
         client_url,
-        agent_command,
-        agent_env: env.into_iter().filter(|(k, _)| k != "VA_MCP_BASIC").collect(),
+        agent_command: settings.agent_command.clone(),
+        agent_env: env.into_iter().filter(|(k, _)| !matches!(k.as_str(), "VA_MCP_BASIC" | "TEST_EMAIL" | "TEST_PASSWORD")).collect(),
         mcp_servers: Vec::new(),
         api_mcp,
         api_url,
@@ -885,17 +769,6 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(3));
     }
 
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn npm_cmd_works_with_a_custom_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("node tools");
-        std::fs::create_dir(&bin).unwrap();
-        std::fs::write(bin.join("npm.cmd"), "@echo off\r\necho 10.0.0\r\n").unwrap();
-        let mut env: HashMap<String, String> = std::env::vars().filter(|(k, _)| !k.eq_ignore_ascii_case("PATH")).collect();
-        env.insert("PATH".into(), bin.to_string_lossy().into_owned());
-        assert_eq!(run("npm", &["--version"], dir.path(), &env).await.unwrap(), "10.0.0");
-    }
 
     #[tokio::test]
     async fn progress_reports_waiting_and_failure() {
@@ -913,56 +786,7 @@ mod tests {
         assert!(lines.last().unwrap().starts_with("Failed: Test download"));
     }
 
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn mise_bootstrap_installs_to_private_path_and_reports_failures() {
-        let dir = tempfile::tempdir().unwrap();
-        let destination = dir.path().join("private tools/mise");
-        let env = HashMap::from([("PATH".into(), "/usr/bin:/bin".into())]);
-        let script = "#!/bin/sh\nset -eu\n[ \"$MISE_INSTALL_MODIFY_PATH\" = 0 ]\nprintf '#!/bin/sh\\necho mise-test\\n' > \"$MISE_INSTALL_PATH\"\nchmod 755 \"$MISE_INSTALL_PATH\"\n";
-        install_mise(&destination, script, &env).await.unwrap();
-        assert_eq!(run(destination.to_str().unwrap(), &["--version"], dir.path(), &env).await.unwrap(), "mise-test");
-        assert_eq!(std::fs::read_dir(destination.parent().unwrap()).unwrap().count(), 1);
 
-        let failed = dir.path().join("failed/mise");
-        let error = install_mise(&failed, "echo download-failed >&2; exit 1", &env).await.unwrap_err();
-        assert!(error.contains("download-failed"), "{error}");
-        assert!(!failed.exists());
-        assert_eq!(std::fs::read_dir(failed.parent().unwrap()).unwrap().count(), 0);
-        let error = install_mise(&failed, "exit 0", &env).await.unwrap_err();
-        assert!(error.contains("working executable"), "{error}");
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn missing_npm_uses_mise_and_exports_node_path() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("bin");
-        let node_bin = dir.path().join("runtime/bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        std::fs::create_dir_all(&node_bin).unwrap();
-        std::fs::write(dir.path().join("mise.toml"), "[tools]\nnode = '22'\n").unwrap();
-        let script = format!(
-            "#!/bin/sh\n[ \"$MISE_NO_CONFIG\" = 1 ] || exit 7\n[ \"$2\" = node@22 ] || exit 9\ncase $1 in\ninstall) exit 0;;\nwhere) printf '%s\\n' '{}' ;;\n*) exit 8;;\nesac\n",
-            dir.path().join("runtime").display()
-        );
-        for (path, contents) in [
-            (bin.join("mise"), script.as_str()),
-            (node_bin.join("npm"), "#!/bin/sh\necho 10.0.0\n"),
-            (node_bin.join("node"), "#!/bin/sh\necho v22.0.0\n"),
-        ] {
-            std::fs::write(&path, contents).unwrap();
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        let mut env = HashMap::from([("PATH".into(), bin.to_string_lossy().into_owned())]);
-        ensure_node(dir.path(), &mut env, &|_| {}).await.unwrap();
-        assert!(!env.contains_key("MISE_NO_CONFIG"));
-        assert_eq!(run("node", &["--version"], dir.path(), &env).await.unwrap(), "v22.0.0");
-        // A working runtime must not invoke mise again.
-        std::fs::remove_file(bin.join("mise")).unwrap();
-        ensure_node(dir.path(), &mut env, &|_| {}).await.unwrap();
-    }
 
     #[test]
     fn settings_round_trip_and_defaults() {
@@ -1002,14 +826,32 @@ mod tests {
         assert!(settings.workspace.is_none());
     }
 
+
     #[test]
-    fn agent_paths_follow_the_platform() {
-        let package = claude_platform_package();
-        assert!(package.starts_with("claude-agent-sdk-"), "{package}");
-        assert!(!package.contains("x86_64") && !package.contains("windows") && !package.contains("macos"), "{package}");
-        assert!(claude_binary().starts_with(agent_dir()));
-        let command = agent_command_for(Path::new("/state/agent/node_modules/x/dist/index.js"));
-        assert_eq!(command, "node \"/state/agent/node_modules/x/dist/index.js\"");
+    fn checks_render_with_their_level() {
+        assert_eq!(Check::new("git", Level::Ok, "found").line(), "✓ git: found");
+        assert_eq!(Check::new("Disk space", Level::Fail, "1 MB free").line(), "✕ Disk space: 1 MB free");
+    }
+
+    #[test]
+    fn free_space_is_measured() {
+        assert!(free_bytes(&std::env::temp_dir()).is_some_and(|b| b > 0));
+        assert!(free_bytes(&std::env::temp_dir().join("not/there/yet")).is_some());
+    }
+
+    #[tokio::test]
+    async fn preflight_flags_a_folder_that_is_not_the_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Settings { app_repo: Some(dir.path().to_path_buf()), ..Settings::default() };
+        let env: HashMap<String, String> = std::env::vars().collect();
+        let checks = preflight(&settings, &env).await;
+        let folder = checks.iter().find(|c| c.label == "App folder").unwrap();
+        assert_eq!(folder.level, Level::Fail, "{folder:?}");
+        std::fs::write(dir.path().join("Makefile"), "dev:\n").unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        let checks = preflight(&settings, &env).await;
+        assert_eq!(checks.iter().find(|c| c.label == "App folder").unwrap().level, Level::Ok);
+        assert!(checks.iter().any(|c| c.label == "make"));
     }
 
     #[test]
@@ -1030,17 +872,6 @@ mod tests {
         assert!(port > taken && port < taken + 20);
     }
 
-    #[test]
-    fn path_changes_keep_the_windows_variable_name() {
-        let mut env = HashMap::from([("Path".to_string(), std::env::join_paths(["/usr/bin"]).unwrap().to_string_lossy().into_owned())]);
-        prepend_path(&mut env, PathBuf::from("/opt/node")).unwrap();
-        assert_eq!(env.len(), 1, "no second PATH entry: {env:?}");
-        let path = env_path(&env).unwrap();
-        assert!(std::env::split_paths(path).next() == Some(PathBuf::from("/opt/node")), "{path}");
-        let mut empty = HashMap::new();
-        prepend_path(&mut empty, PathBuf::from("/opt/node")).unwrap();
-        assert!(empty.contains_key("PATH"));
-    }
 
     #[test]
     fn onboarding_refuses_wsl_and_network_paths() {

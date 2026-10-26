@@ -49,7 +49,7 @@
   <header><span class="brand">VoipAppz Builder</span><span id="timer">Starting…</span></header>
   <h1 id="heading">Getting things ready</h1>
   <p id="status" role="status">Connecting to Builder’s setup progress…</p>
-  <p id="actions" hidden><button type="button" id="claude-login">Sign in to Claude</button> <button type="button" id="restart">Restart Builder</button></p>
+  <p id="actions" hidden><button type="button" id="restart">Retry setup</button></p>
   <p id="action-note" class="hint" hidden></p>
   <form id="onboarding">
     <fieldset id="fields">
@@ -63,10 +63,10 @@
       <p>The previews connect to this API for account data. The agent can optionally inspect it with read-only tools.</p>
       <label for="api-url">Hosted API address</label><input id="api-url" type="url" required value="https://switch.voipappz.io">
       <p class="hint">Use the hosted VoipAppz API. You do not need to install or run voipappz-api locally.</p>
-      <details><summary>Enable API tools for the coding agent (optional)</summary>
+      <details><summary>API login (optional): for the app and the agent’s read-only tools</summary>
         <label for="api-email">API account email</label><input id="api-email" type="email" autocomplete="username">
         <label for="api-password">API password</label><input id="api-password" type="password" autocomplete="off">
-        <p class="hint">Used only for this Builder session. Credentials are not saved or passed to the coding agent. Sign in separately in the Admin/User previews. Leave these blank to use previews without agent API tools.</p>
+        <p class="hint">Used only for this Builder session: the app’s login (<code>make setup</code>/<code>make dev</code>) and the agent’s read-only API tools. Not saved by Builder and never passed to the coding agent. Leave blank if the app checkout already has its login in <code>.env</code>.</p>
       </details>
       <p><button type="button" id="check-api">Check API connection</button></p>
       <p id="connection" role="status"></p>
@@ -74,10 +74,10 @@
     </fieldset>
   </form>
   <ol id="wizard" aria-label="Setup steps" hidden></ol>
-  <p id="intro">Builder runs your app locally so you can preview your changes. Node.js runs
-    the app’s development tools, and npm installs the packages they need.
-    Builder sets these up automatically—you don’t need to install them yourself.
-    The first setup needs an internet connection and may take several minutes.</p>
+  <p id="intro">Builder runs your app with the app’s own commands: <code>make setup</code> the
+    first time (Node, packages, login), then <code>make dev</code>. Your API email and
+    password, if you enter them, are what the app’s login uses. The first setup
+    needs an internet connection and may take several minutes.</p>
   <details class="log" id="log"><summary>Setup details</summary>
     <pre id="history" tabindex="0" aria-label="Setup details"></pre>
     <button id="copy" type="button">Copy details</button>
@@ -173,11 +173,6 @@
       } finally { setTimeout(refresh, 750); }
     }
     const actionNote = document.getElementById('action-note');
-    document.getElementById('claude-login').onclick = async () => {
-      actionNote.hidden = false;
-      try { actionNote.textContent = await invoke('claude_login'); }
-      catch (error) { actionNote.textContent = String(error); }
-    };
     document.getElementById('restart').onclick = async () => {
       actionNote.hidden = false; actionNote.textContent = 'Restarting Builder…';
       try { await invoke('restart_builder'); } catch (error) { actionNote.textContent = String(error); }
