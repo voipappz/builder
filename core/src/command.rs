@@ -152,6 +152,9 @@ pub fn create_shell_command(
                 .arg(distro)
                 .arg("--cd")
                 .arg(cwd)
+                // Without --exec, wsl.exe passes the command through the
+                // distro's default shell once more, which strips the quoting.
+                .arg("--exec")
                 .arg("sh")
                 .arg("-c")
                 .arg(full_command)
