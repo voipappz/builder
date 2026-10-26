@@ -70,6 +70,47 @@ impl Check {
     }
 }
 
+/// The WSL distro an app folder lives in, if it is under `\\wsl.localhost`.
+/// On Windows, Builder then runs git, the app's Makefile and the agent there.
+pub fn wsl_distro(settings: &Settings) -> Option<String> {
+    let repo = settings.app_repo.as_deref().or(settings.workspace.as_deref())?;
+    crate::wsl::location(&repo.to_string_lossy()).map(|(distro, _)| distro)
+}
+
+/// `path` as the commands see it: the Linux path inside the distro, or as is.
+fn command_path(path: &Path, distro: Option<&str>) -> String {
+    match (distro, crate::wsl::location(&path.to_string_lossy())) {
+        (Some(_), Some((_, linux))) => linux,
+        _ => path.to_string_lossy().into_owned(),
+    }
+}
+
+/// Single-quote `s` for sh.
+fn sh_quote(s: &str) -> String {
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:@%+,".contains(c)) {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// What a command inside the distro gets from Builder: its PATH and the
+/// variables Builder adds. wsl.exe passes these on the command line, and
+/// the distro gives HOME, USER and the rest itself.
+fn wsl_env(env: &HashMap<String, String>) -> HashMap<String, String> {
+    env.iter()
+        .filter(|(k, _)| matches!(k.as_str(), "PATH" | "TEST_EMAIL" | "TEST_PASSWORD" | "VA_TEST_OTP" | "VITE_API_BASE_URL")
+            || k.starts_with("ANTHROPIC_") || k.starts_with("CLAUDE_"))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// Whether a distro's `uname -r` is a WSL2 kernel ("…-microsoft-standard-WSL2");
+/// WSL1 reports a version ending in "-Microsoft".
+pub fn wsl2_kernel(release: &str) -> bool {
+    let release = release.trim().to_ascii_lowercase();
+    release.contains("wsl2") || (release.contains("microsoft-standard") && !release.ends_with("-microsoft"))
+}
+
 /// Free bytes on the volume holding `path`.
 pub fn free_bytes(path: &Path) -> Option<u64> {
     let path = path.ancestors().find(|p| p.exists())?;
@@ -98,30 +139,70 @@ pub async fn preflight(settings: &Settings, env: &HashMap<String, String>) -> Ve
     let found = |tool: &str| which::which_in(tool, path.as_ref(), &cwd).is_ok();
 
     let repo = settings.app_repo.as_deref().or(settings.workspace.as_deref());
+    let distro = wsl_distro(settings);
+    if let Some(distro) = &distro {
+        // Builder's own PATH: `env` is the distro's environment here.
+        if cfg!(windows) && which::which("wsl.exe").is_err() {
+            checks.push(Check::new("WSL", Level::Fail, "wsl.exe not found; the app folder is in WSL"));
+        } else {
+            checks.push(Check::new("WSL", Level::Ok, format!("the app runs in the {distro} distro")));
+        }
+    }
     match repo {
         None => checks.push(Check::new("App folder", Level::Fail, "Choose the voipappz/app checkout.")),
-        Some(repo) if is_network_path(&repo.to_string_lossy()) || repo.to_string_lossy().starts_with(r"\\?\UNC") =>
-            checks.push(Check::new("App folder", Level::Fail, format!("{} is on WSL or a network share; Builder cannot run the app there yet.", repo.display()))),
+        Some(repo) if distro.is_none() && (is_network_path(&repo.to_string_lossy()) || repo.to_string_lossy().starts_with(r"\\?\UNC")) =>
+            checks.push(Check::new("App folder", Level::Fail, format!("{} is on a network share; choose a local or WSL checkout.", repo.display()))),
         Some(repo) if !repo.join("Makefile").is_file() || !repo.join("package.json").is_file() =>
             checks.push(Check::new("App folder", Level::Fail, format!("{} has no Makefile and package.json; choose the voipappz/app checkout.", repo.display()))),
         Some(repo) => checks.push(Check::new("App folder", Level::Ok, repo.display().to_string())),
     }
 
+    // Inside WSL the tools must be found in the distro, not on Windows.
+    let in_distro: Option<Vec<String>> = match (&distro, repo) {
+        (Some(d), Some(repo)) => run_on(Some(d), "sh", &["-c", "uname -r; for t in git make bash curl; do command -v $t >/dev/null && echo $t; done"],
+            repo, env, Duration::from_secs(60)).await.ok().map(|out| out.lines().map(str::to_string).collect()),
+        _ => None,
+    };
+    // The previews reach the dev server on localhost, which only WSL2
+    // forwards to Windows; the distro's kernel names its WSL version.
+    if let (Some(d), Some(lines)) = (&distro, &in_distro) {
+        let kernel = lines.first().map(String::as_str).unwrap_or_default();
+        checks.push(if wsl2_kernel(kernel) {
+            Check::new("WSL version", Level::Ok, format!("WSL2 ({kernel})"))
+        } else {
+            Check::new("WSL version", Level::Fail, format!("{d} runs on WSL1 ({kernel}); Builder needs WSL2. In PowerShell: wsl --set-version {d} 2"))
+        });
+    }
     for (tool, why) in [("git", "Builder makes its working copy with git"), ("make", "Builder runs the app with its Makefile"), ("bash", "the app's Makefile needs bash"), ("curl", "the app's Makefile needs curl")] {
-        if found(tool) {
+        let present = match (&distro, &in_distro) {
+            (Some(_), Some(tools)) => tools.iter().any(|t| t == tool),
+            (Some(_), None) => false,
+            (None, _) => found(tool),
+        };
+        if present {
             checks.push(Check::new(tool, Level::Ok, "found"));
         } else {
-            let hint = if cfg!(windows) { " On Windows, the app runs through WSL; that mode is not available yet." } else { "" };
+            let hint = match &distro {
+                Some(d) => format!(" Install it in {d}: sudo apt install {tool}"),
+                None if cfg!(windows) => " On Windows, choose the app checkout inside WSL (\\\\wsl.localhost\\…); Builder runs it there.".to_string(),
+                None => String::new(),
+            };
             checks.push(Check::new(tool, Level::Fail, format!("not found; {why}.{hint}")));
         }
     }
 
-    let disk = repo.map(Path::to_path_buf).unwrap_or_else(state_dir);
-    match free_bytes(&disk) {
-        Some(free) if free < MIN_FREE_BYTES => checks.push(Check::new("Disk space", Level::Fail,
-            format!("{} MB free; setup needs about {} MB. Free some space and retry.", free / 1_048_576, MIN_FREE_BYTES / 1_048_576))),
-        Some(free) => checks.push(Check::new("Disk space", Level::Ok, format!("{} GB free", free / 1_073_741_824))),
-        None => checks.push(Check::new("Disk space", Level::Warn, "could not be measured")),
+    // A WSL distro's disk is a file on the Windows drive: both need room.
+    let mut disks = vec![("Disk space", repo.map(Path::to_path_buf).unwrap_or_else(state_dir))];
+    if distro.is_some() {
+        disks.push(("Windows disk space", state_dir()));
+    }
+    for (label, disk) in disks {
+        match free_bytes(&disk) {
+            Some(free) if free < MIN_FREE_BYTES => checks.push(Check::new(label, Level::Fail,
+                format!("{} MB free; setup needs about {} MB. Free some space and retry.", free / 1_048_576, MIN_FREE_BYTES / 1_048_576))),
+            Some(free) => checks.push(Check::new(label, Level::Ok, format!("{} GB free", free / 1_073_741_824))),
+            None => checks.push(Check::new(label, Level::Warn, "could not be measured")),
+        }
     }
 
     let wanted = url_port(&settings.client_url).unwrap_or(3000);
@@ -356,8 +437,8 @@ pub fn is_network_path(path: &str) -> bool {
 }
 
 pub fn onboarding_settings(mut settings: Settings, app_repo: &str, api_url: &str, api_dir: &str) -> Result<Settings, String> {
-    if is_network_path(app_repo) {
-        return Err("This folder is on WSL or a network share. Choose a checkout on a local drive (for example C:\\Users\\you\\voipappz-app), or run Builder inside WSL.".into());
+    if is_network_path(app_repo) && crate::wsl::location(app_repo).is_none() {
+        return Err("This folder is on a network share. Choose a checkout on a local drive or inside WSL (\\\\wsl.localhost\\<distro>\\…).".into());
     }
     let repo = PathBuf::from(app_repo.trim());
     if !repo.join("package.json").is_file() || !repo.join("src/builder-client/main.jsx").is_file() {
@@ -368,7 +449,7 @@ pub fn onboarding_settings(mut settings: Settings, app_repo: &str, api_url: &str
     }
     let api_dir = (!api_dir.trim().is_empty()).then(|| PathBuf::from(api_dir.trim()));
     let url = onboarding_api_url(api_url, api_dir.as_deref())?;
-    settings.app_repo = Some(dunce::canonicalize(repo).map_err(|e| e.to_string())?);
+    settings.app_repo = Some(if crate::wsl::location(app_repo).is_some() { repo } else { dunce::canonicalize(repo).map_err(|e| e.to_string())? });
     settings.workspace = None;
     settings.api_url = Some(url);
     settings.api_dir = api_dir;
@@ -410,14 +491,17 @@ impl Running {
     }
 }
 
-fn start_dev_server(workspace: &Path, env: HashMap<String, String>, port: u16) -> Result<ChildProcess, String> {
+fn start_dev_server(workspace: &Path, env: HashMap<String, String>, port: u16, distro: Option<&str>) -> Result<ChildProcess, String> {
     let log_dir = state_dir();
     std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
     let log = std::fs::File::create(log_dir.join("app.log")).map_err(|e| e.to_string())?;
     let log_err = log.try_clone().map_err(|e| e.to_string())?;
     // The app's own target: its login gate, then its dev server on `port`.
     let script = format!("make dev PORT={port}");
-    let mut command = create_shell_command(&script, env, &workspace.to_string_lossy(), None);
+    let mut command = match distro {
+        Some(_) => create_shell_command(&format!("exec bash -lc {}", sh_quote(&script)), wsl_env(&env), &command_path(workspace, distro), distro),
+        None => create_shell_command(&script, env, &workspace.to_string_lossy(), None),
+    };
     command
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
@@ -454,18 +538,36 @@ async fn run(program: &str, args: &[&str], cwd: &Path, env: &HashMap<String, Str
     run_with_timeout(program, args, cwd, env, limit).await
 }
 
+/// Run `program` in `cwd` on this computer, or inside `distro` (the Linux
+/// form of `cwd` and the distro's own login shell, so its tools are found).
+async fn run_on(distro: Option<&str>, program: &str, args: &[&str], cwd: &Path, env: &HashMap<String, String>, limit: Duration) -> Result<String, String> {
+    match distro {
+        None => run_with_timeout(program, args, cwd, env, limit).await,
+        Some(distro) => {
+            let line = std::iter::once(program).chain(args.iter().copied()).map(sh_quote).collect::<Vec<_>>().join(" ");
+            let command = create_shell_command(&format!("exec bash -lc {}", sh_quote(&line)), wsl_env(env), &command_path(cwd, Some(distro)), Some(distro));
+            run_command(command, program, args, limit).await
+        }
+    }
+}
+
 async fn run_with_timeout(program: &str, args: &[&str], cwd: &Path, env: &HashMap<String, String>, limit: Duration) -> Result<String, String> {
-    use tokio::io::AsyncReadExt;
     let mut command = tokio::process::Command::new(program);
     command.args(args)
         .current_dir(cwd)
         .env_clear()
-        .envs(env)
+        .envs(env);
+    #[cfg(unix)]
+    command.process_group(0);
+    run_command(command, program, args, limit).await
+}
+
+async fn run_command(mut command: tokio::process::Command, program: &str, args: &[&str], limit: Duration) -> Result<String, String> {
+    use tokio::io::AsyncReadExt;
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(unix)]
-    command.process_group(0);
     let mut process = spawn_command(command)
         .map_err(|e| format!("{} could not run: {}", program, e))?;
     let mut stdout = process.child.stdout.take().ok_or("Command stdout unavailable")?;
@@ -528,26 +630,34 @@ async fn ensure_workspace(
         (None, Some(repo)) => default_worktree(repo),
         (None, None) => return Err("Choose the app repository (../app) Builder works on.".into()),
     };
+    let distro = wsl_distro(settings);
+    let distro = distro.as_deref();
+    let git = |args: Vec<String>, cwd: PathBuf| async move {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_on(distro, "git", &args, &cwd, env, Duration::from_secs(120)).await
+    };
     progress("@step workspace");
     if !workspace.exists() {
         let repo = app_repo.ok_or_else(|| format!("Workspace {} does not exist", workspace.display()))?;
         progress("Creating Builder's worktree of the app…");
         if let Err(error) = report_progress("Fetching the latest app code", progress,
-            run("git", &["fetch", "origin", "main"], repo, env)).await {
+            git(vec!["fetch".into(), "origin".into(), "main".into()], repo.to_path_buf())).await {
             progress(&format!("Could not refresh the app; trying the existing checkout. {error}"));
         }
-        let path = workspace.to_string_lossy().into_owned();
-        let has_branch = run("git", &["rev-parse", "--verify", "--quiet", "refs/heads/builder/work"], repo, env)
+        let path = command_path(&workspace, distro);
+        let has_branch = git(["rev-parse", "--verify", "--quiet", "refs/heads/builder/work"].map(String::from).to_vec(), repo.to_path_buf())
             .await
             .is_ok();
         if has_branch {
-            run("git", &["worktree", "add", &path, "builder/work"], repo, env).await?;
+            git(vec!["worktree".into(), "add".into(), path, "builder/work".into()], repo.to_path_buf()).await?;
         } else {
-            run("git", &["worktree", "add", "-b", "builder/work", &path, "origin/main"], repo, env).await?;
+            git(vec!["worktree".into(), "add".into(), "-b".into(), "builder/work".into(), path, "origin/main".into()], repo.to_path_buf()).await?;
         }
     }
-    let workspace = dunce::canonicalize(&workspace)
-        .map_err(|e| format!("Workspace {}: {}", workspace.display(), e))?;
+    // A WSL path stays as chosen: canonicalising it on Windows gives a \\?\UNC form.
+    let workspace = if distro.is_some() { workspace } else {
+        dunce::canonicalize(&workspace).map_err(|e| format!("Workspace {}: {}", workspace.display(), e))?
+    };
     progress(&format!("Workspace: {}", workspace.display()));
 
     progress("@step setup");
@@ -555,7 +665,7 @@ async fn ensure_workspace(
     // setup has not finished. `make setup` installs Node (mise), runs npm ci
     // and checks the login; it is safe to run again.
     if !workspace.join("node_modules/.package-lock.json").is_file() {
-        let setup = || run_with_timeout("make", &["setup"], &workspace, env, Duration::from_secs(20 * 60));
+        let setup = || run_on(distro, "make", &["setup"], &workspace, env, Duration::from_secs(20 * 60));
         report_progress("Running the app's setup (make setup): Node, packages and login; the first time takes a few minutes", progress, setup()).await
             .map_err(|e| format!("{e}\n\nThe app's setup failed. If it asks for a login, enter your API email and password in Builder's setup, \
                 or run `make setup` in {} in a terminal.", workspace.display()))?;
@@ -587,7 +697,9 @@ pub async fn start(settings: &Settings, progress: impl Fn(&str)) -> Result<Runni
 pub async fn shell_env(settings: &Settings) -> HashMap<String, String> {
     let env_dir = settings.app_repo.clone().or_else(|| settings.workspace.clone())
         .filter(|p| p.is_dir()).or_else(dirs::home_dir).unwrap_or_else(std::env::temp_dir);
-    crate::shell_env::capture_shell_env(&env_dir.to_string_lossy(), None).await.unwrap_or_else(|e| {
+    let distro = wsl_distro(settings);
+    let dir = command_path(&env_dir, distro.as_deref());
+    crate::shell_env::capture_shell_env(&dir, distro.as_deref()).await.unwrap_or_else(|e| {
         warn!("Shell environment capture failed, using the process environment: {}", e);
         std::env::vars().collect()
     })
@@ -659,7 +771,7 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
             client_url = with_port(&client_url, port);
         }
         progress(&format!("Starting the app (make dev PORT={port})…"));
-        dev_server = Some(start_dev_server(&workspace, env.clone(), port)?);
+        dev_server = Some(start_dev_server(&workspace, env.clone(), port, wsl_distro(settings).as_deref())?);
         let deadline = tokio::time::Instant::now() + DEV_SERVER_WAIT;
         let mut next_update = tokio::time::Instant::now();
         while !answers(&client_url).await {
@@ -715,13 +827,21 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
     if port != settings.port {
         progress(&format!("Port {} is busy (another Builder, possibly running in WSL); using port {port}.", settings.port));
     }
+    let distro = wsl_distro(settings);
+    let mut agent_env: HashMap<String, String> = env.into_iter()
+        .filter(|(k, _)| !matches!(k.as_str(), "VA_MCP_BASIC" | "TEST_EMAIL" | "TEST_PASSWORD")).collect();
+    if distro.is_some() {
+        agent_env = wsl_env(&agent_env);
+    }
     let config = BuilderConfig {
         port,
         secret: BuilderConfig::new_secret(),
-        workspace: workspace.clone(),
+        // The agent runs in the distro, so it works in the Linux path.
+        workspace: PathBuf::from(command_path(&workspace, distro.as_deref())),
         client_url,
         agent_command: settings.agent_command.clone(),
-        agent_env: env.into_iter().filter(|(k, _)| !matches!(k.as_str(), "VA_MCP_BASIC" | "TEST_EMAIL" | "TEST_PASSWORD")).collect(),
+        agent_env,
+        wsl_distro: distro,
         mcp_servers: Vec::new(),
         api_mcp,
         api_url,
@@ -828,6 +948,36 @@ mod tests {
 
 
     #[test]
+    fn wsl_settings_give_the_distro_and_linux_paths() {
+        let settings = Settings { app_repo: Some(PathBuf::from(r"\\wsl.localhost\Debian\home\nir\voipappz\app")), ..Settings::default() };
+        assert_eq!(wsl_distro(&settings).as_deref(), Some("Debian"));
+        assert_eq!(command_path(Path::new(r"\\wsl.localhost\Debian\home\nir\voipappz\app-builder"), Some("Debian")), "/home/nir/voipappz/app-builder");
+        assert_eq!(command_path(Path::new("/home/nir/app"), None), "/home/nir/app");
+        assert_eq!(wsl_distro(&Settings { app_repo: Some(PathBuf::from("/home/nir/app")), ..Settings::default() }), None);
+    }
+
+    #[test]
+    fn wsl_version_from_the_kernel() {
+        assert!(wsl2_kernel("6.6.87.2-microsoft-standard-WSL2"));
+        assert!(wsl2_kernel("5.15.167.4-microsoft-standard-WSL2\n"));
+        assert!(!wsl2_kernel("4.4.0-19041-Microsoft"));
+        assert!(!wsl2_kernel(""));
+    }
+
+    #[test]
+    fn shell_quoting_and_wsl_env() {
+        assert_eq!(sh_quote("make"), "make");
+        assert_eq!(sh_quote("PORT=3001"), "PORT=3001");
+        assert_eq!(sh_quote("it's here"), "'it'\\''s here'");
+        assert_eq!(sh_quote(""), "''");
+        let env = HashMap::from([("PATH".to_string(), "/usr/bin".to_string()), ("TEST_EMAIL".into(), "a@b".into()),
+            ("WINDIR".into(), r"C:\Windows".into()), ("ANTHROPIC_MODEL".into(), "x".into())]);
+        let mut keys: Vec<String> = wsl_env(&env).into_keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["ANTHROPIC_MODEL", "PATH", "TEST_EMAIL"]);
+    }
+
+    #[test]
     fn checks_render_with_their_level() {
         assert_eq!(Check::new("git", Level::Ok, "found").line(), "✓ git: found");
         assert_eq!(Check::new("Disk space", Level::Fail, "1 MB free").line(), "✕ Disk space: 1 MB free");
@@ -880,8 +1030,11 @@ mod tests {
         assert!(is_network_path(r"\\server\share\app"));
         assert!(!is_network_path(r"C:\Users\nir\voipappz-app"));
         assert!(!is_network_path("/home/nir/voipappz/app"));
-        let err = onboarding_settings(Settings::default(), r"\\wsl.localhost\Debian\home\nir\voipappz\app", "https://switch.voipappz.io", "").unwrap_err();
-        assert!(err.contains("WSL"), "{err}");
+        let share = onboarding_settings(Settings::default(), r"\\server\share\app", "https://switch.voipappz.io", "").unwrap_err();
+        assert!(share.contains("network share"), "{share}");
+        // A WSL checkout gets past the share check (here it then lacks the app's files).
+        let wsl = onboarding_settings(Settings::default(), r"\\wsl.localhost\Debian\home\nir\voipappz\app", "https://switch.voipappz.io", "").unwrap_err();
+        assert!(!wsl.contains("network share"), "{wsl}");
     }
 
     #[test]

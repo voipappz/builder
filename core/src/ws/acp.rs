@@ -204,6 +204,9 @@ pub struct AgentPolicy {
     pub env: HashMap<String, String>,
     pub cwd: String,
     pub mcp_servers: Vec<Value>,
+    /// On Windows, the WSL distro the agent runs in; `cwd` and the paths the
+    /// agent reports are then Linux paths inside it.
+    pub wsl_distro: Option<String>,
 }
 
 impl AgentPolicy {
@@ -212,7 +215,7 @@ impl AgentPolicy {
             command: self.command.clone(),
             env: self.env.clone(),
             cwd: self.cwd.clone(),
-            wsl_distro: None,
+            wsl_distro: self.wsl_distro.clone(),
         }
     }
 
@@ -243,9 +246,8 @@ impl AgentPolicy {
                 }
             }
         }
-        let root = std::path::Path::new(&self.cwd);
         // A write whose target cannot be named is refused too.
-        let allowed = !paths.is_empty() && paths.iter().all(|p| writable_in(root, p));
+        let allowed = !paths.is_empty() && paths.iter().all(|p| self.writable(p));
         if allowed {
             return None;
         }
@@ -267,6 +269,20 @@ impl AgentPolicy {
             Some(option_id) => json!({ "outcome": { "outcome": "selected", "optionId": option_id } }),
             None => json!({ "outcome": { "outcome": "cancelled" } }),
         })
+    }
+
+    /// Whether the agent may write `path`. Inside WSL both the workspace and
+    /// the path are checked by their Windows names, so symlinks and `..`
+    /// are resolved by the same rules as on a local disk.
+    fn writable(&self, path: &str) -> bool {
+        match &self.wsl_distro {
+            Some(distro) => {
+                let root = crate::wsl::unc(distro, &self.cwd);
+                let target = if path.starts_with('/') { crate::wsl::unc(distro, path) } else { path.replace('/', "\\") };
+                writable_in(std::path::Path::new(&root), &target)
+            }
+            None => writable_in(std::path::Path::new(&self.cwd), path),
+        }
     }
 
     /// Pin `cwd` and `mcpServers` on the session requests that carry them.

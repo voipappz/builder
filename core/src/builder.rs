@@ -194,6 +194,9 @@ pub struct BuilderConfig {
     pub client_url: String,
     pub agent_command: String,
     pub agent_env: HashMap<String, String>,
+    /// On Windows, the WSL distro the app and the agent run in; `workspace`
+    /// is then the Linux path inside it.
+    pub wsl_distro: Option<String>,
     /// MCP servers handed to the agent on every session (ACP `mcpServers`).
     pub mcp_servers: Vec<Value>,
     /// The VoipAppz API's MCP server, offered read-only through Builder.
@@ -289,6 +292,7 @@ fn router_with_state(config: BuilderConfig) -> (Router, WsState) {
         command: config.agent_command.clone(),
         env: config.agent_env.clone(),
         cwd: config.workspace.to_string_lossy().into_owned(),
+        wsl_distro: config.wsl_distro.clone(),
         mcp_servers,
     };
     let ws_state = WsState::new()
@@ -584,6 +588,7 @@ mod tests {
             client_url: "http://localhost:3000".to_string(),
             agent_command: "true".to_string(),
             agent_env: HashMap::new(),
+            wsl_distro: None,
             mcp_servers: vec![],
             api_mcp: None,
             api_url: None,
@@ -688,6 +693,7 @@ mod tests {
             env: HashMap::new(),
             cwd: root.to_string_lossy().into_owned(),
             mcp_servers: vec![],
+            wsl_distro: None,
         };
         let ask = |kind: &str, path: &str| {
             json!({
@@ -797,6 +803,7 @@ mod tests {
             env: HashMap::new(),
             cwd: "/work".into(),
             mcp_servers: vec![serde_json::json!({"type": "http", "name": "voipappz"})],
+            wsl_distro: None,
         };
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),

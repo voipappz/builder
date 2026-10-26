@@ -58,7 +58,7 @@
         Builder creates a separate working copy for the coding agent.</p>
       <label for="app-repo">React app folder</label>
       <div class="row"><input id="app-repo" required placeholder="C:\Projects\app"><button type="button" id="browse-app">Browse</button></div>
-      <p class="hint">Use a Git checkout containing package.json, on a local drive (not a WSL or network folder). Git must be installed to create the working copy.</p>
+      <p class="hint">Use a Git checkout of voipappz/app. On Windows, choose the checkout inside WSL (<code>\\wsl.localhost\&lt;distro&gt;\…</code>): Builder runs the app there with its Makefile.</p>
       <h2>2. Your API</h2>
       <p>The previews connect to this API for account data. The agent can optionally inspect it with read-only tools.</p>
       <label for="api-url">Hosted API address</label><input id="api-url" type="url" required value="https://switch.voipappz.io">
