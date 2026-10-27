@@ -25,6 +25,8 @@
     .row input { flex: 1; min-width: 0; }
     .hint { font-size: 13px; color: #444; }
     #connection { white-space: pre-wrap; }
+    #login-state { display: inline-block; margin-top: 12px; padding: 4px 12px; border: 2px solid #999; border-radius: 14px; color: #555; font-weight: 600; font-size: 13px; }
+    #login-state.set { border-color: #1e8e3e; background: #e3f6e8; color: #136b2c; }
     button:disabled { opacity: .6; cursor: wait; }
     /* Setup wizard */
     #wizard { list-style: none; margin: 20px 0; padding: 0; border: 2px solid #111; border-radius: 14px; background: #fff; overflow: hidden; }
@@ -67,6 +69,7 @@
       <details open><summary>API login: the app signs in with it</summary>
         <label for="api-email">API account email</label><input id="api-email" type="email" autocomplete="username">
         <label for="api-password">API password</label><input id="api-password" type="password" autocomplete="off">
+        <p id="login-state" role="status">API login not set</p>
         <p class="hint">Used only for this Builder session: the app’s login (<code>make setup</code>/<code>make dev</code>) and the agent’s read-only API tools. Not saved by Builder and never passed to the coding agent. Leave blank if the app checkout already has its login in <code>.env</code>.</p>
       </details>
       <p><button type="button" id="check-api">Check API connection</button></p>
@@ -98,7 +101,7 @@
     }
     for (const [button, field, api] of [['browse-app', 'app-repo', false]]) {
       document.getElementById(button).onclick = async () => {
-        try { const path = await invoke('onboarding_folder', { api }); if (path) document.getElementById(field).value = path; }
+        try { const path = await invoke('onboarding_folder', { api }); if (path) { document.getElementById(field).value = path; checkAppLogin(); } }
         catch (error) { connection.textContent = String(error); }
       };
     }
@@ -119,10 +122,28 @@
       } catch (error) { connection.textContent = String(error); }
       finally { submitting = false; }
     };
+    // Green once the login is known: both fields filled, or the app has it.
+    let appHasLogin = false;
+    function showLogin() {
+      const { email, password } = apiFields();
+      const typed = email && password;
+      const state = document.getElementById('login-state');
+      state.classList.toggle('set', Boolean(typed || appHasLogin));
+      state.textContent = typed ? '✓ API login set' : appHasLogin ? '✓ API login set (in the app’s .env)' : 'API login not set';
+    }
+    async function checkAppLogin() {
+      try { appHasLogin = await invoke('app_login', { appRepo: document.getElementById('app-repo').value }); }
+      catch { appHasLogin = false; }
+      showLogin();
+    }
+    document.getElementById('api-email').oninput = showLogin;
+    document.getElementById('api-password').oninput = showLogin;
+    document.getElementById('app-repo').onchange = checkAppLogin;
     invoke('app_version').then(version => { document.getElementById('version').textContent = 'v' + version; }).catch(() => {});
     invoke('onboarding_info').then(settings => {
       document.getElementById('app-repo').value = settings.app_repo || settings.workspace || '';
       document.getElementById('api-url').value = settings.api_dir ? 'https://switch.voipappz.io' : (settings.api_url || 'https://switch.voipappz.io');
+      checkAppLogin();
     }).catch(error => { connection.textContent = String(error); });
     // The wizard: one row per setup step. Steps before the current one are
     // done, the current one runs (or failed), the rest wait. The last plain

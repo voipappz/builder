@@ -29,6 +29,14 @@ fn app_version() -> &'static str { VERSION }
 #[tauri::command]
 fn onboarding_info() -> Result<Settings, String> { Settings::load() }
 
+/// Whether the app checkout (or Builder's worktree of it) already has its login.
+#[tauri::command]
+fn app_login(app_repo: String) -> bool {
+    let repo = PathBuf::from(app_repo.trim());
+    !app_repo.trim().is_empty()
+        && (launcher::has_app_login(&repo) || launcher::has_app_login(&launcher::default_worktree(&repo)))
+}
+
 #[tauri::command]
 async fn onboarding_folder(app: AppHandle, api: bool) -> Option<String> {
     pick_workspace(&app, if api { "Choose the voipappz-api checkout" } else { "Choose the React app Git checkout (voipappz/app)" })
@@ -288,7 +296,7 @@ pub fn run() {
     info!("VoipAppz Builder {}", VERSION);
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![app_version, startup_progress, onboarding_info, onboarding_folder, onboarding_check, onboarding_start, restart_builder])
+        .invoke_handler(tauri::generate_handler![app_version, app_login, startup_progress, onboarding_info, onboarding_folder, onboarding_check, onboarding_start, restart_builder])
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tauri::async_runtime::spawn(open_page(app.clone()));
         }))
