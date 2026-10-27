@@ -98,6 +98,10 @@ run `make dev` and `make tenant` in `voipappz-api`.
 
 - `cargo test` runs the core and CLI tests; `npm test` in `contracts/` runs
   the contract fixtures. CI: `.github/workflows/test.yml`.
+- `scripts/e2e.sh` (CI job `e2e`) is the user's path end to end: it clones
+  voipappz/app, starts the CLI with `--start-app` (worktree, `make setup`,
+  `make dev`), then checks the Builder page, the app and the agent's ACP
+  `initialize`. It needs `TEST_EMAIL` and `TEST_PASSWORD` for the app's login.
 - `.github/workflows/installers.yml` builds the desktop app for Linux
   (`.deb`, `.AppImage`), Windows (`.exe`) and macOS (`.dmg`) on pushes to
   `main` that touch the app, or on demand. A `v*` tag also creates a draft

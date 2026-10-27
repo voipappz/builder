@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   rust:
@@ -27,3 +28,21 @@ jobs:
           node-version: 20
       - run: npm ci
       - run: npm test
+
+  # The user's path: clone voipappz/app (public), Builder's worktree, the
+  # app's make setup and make dev, the Builder page, the agent. The app's
+  # login gate signs in with the test account.
+  e2e:
+    runs-on: ubuntu-22.04
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Clone the app, setup, dev, Builder, agent
+        env:
+          TEST_EMAIL: ${{ secrets.TEST_EMAIL }}
+          TEST_PASSWORD: ${{ secrets.TEST_PASSWORD }}
+          VOIPAPPZ_API_URL: ${{ secrets.VITE_API_BASE_URL }}
+        run: scripts/e2e.sh
