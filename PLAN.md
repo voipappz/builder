@@ -119,9 +119,8 @@ Decisions recorded 2026-10-25:
   edits stay local, Vite HMR shows them at once, and it fits the Lego
   layout plan. Store apps, when wanted, wrap the same code with Capacitor
   (optionally Ionic React); nothing is built for them yet. The local
-  `../mobile` checkout (Ionic 8 / Angular 21 / Capacitor 6, uncommitted,
-  not on GitHub) is not used; it serves only as a reference for which
-  end-user screens a customer starter needs. Next: a slim React customer
+  `../mobile` checkout (Ionic 8 / Angular 21 / Capacitor 6) is not used
+  by Builder in any way. Next: a slim React customer
   starter (user portal, phone, extensions, numbers, IVR, queues, calls)
   carved from `voipappz/app`, and `app new` pointed at it.
 - **Phone-width preview in Builder.** A third preview frame shows the user
