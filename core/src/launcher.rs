@@ -191,6 +191,17 @@ pub async fn preflight(settings: &Settings, env: &HashMap<String, String>) -> Ve
         }
     }
 
+    // `make setup` ends by signing in; without a login and no TTY it stops.
+    if let Some(repo) = repo {
+        let given = env.get("TEST_EMAIL").is_some_and(|e| !e.is_empty());
+        if given || has_app_login(repo) || has_app_login(&default_worktree(repo)) {
+            checks.push(Check::new("API login", Level::Ok, if given { "entered in setup" } else { "in the app's .env" }));
+        } else {
+            checks.push(Check::new("API login", Level::Fail,
+                "none; enter your API email and password in Builder's setup. The app's make setup signs in with them."));
+        }
+    }
+
     // A WSL distro's disk is a file on the Windows drive: both need room.
     let mut disks = vec![("Disk space", repo.map(Path::to_path_buf).unwrap_or_else(state_dir))];
     if distro.is_some() {
@@ -509,6 +520,20 @@ fn start_dev_server(workspace: &Path, env: HashMap<String, String>, port: u16, d
     spawn_command(command).map_err(|e| format!("could not start make dev: {}", e))
 }
 
+/// Whether the app checkout at `dir` can sign in without asking: a login in
+/// its .env, or a token the login gate already cached.
+pub fn has_app_login(dir: &Path) -> bool {
+    if dir.join(".env.token").is_file() {
+        return true;
+    }
+    let text = std::fs::read_to_string(dir.join(".env")).unwrap_or_default();
+    let set = |key: &str| text.lines().any(|line| {
+        line.trim().strip_prefix(key).and_then(|rest| rest.strip_prefix('='))
+            .is_some_and(|value| !value.trim().trim_matches(|c| c == '"' || c == '\'').is_empty())
+    });
+    set("TEST_EMAIL") && set("TEST_PASSWORD")
+}
+
 /// Builder's worktree next to the app repository: `../app` -> `../app-builder`.
 pub fn default_worktree(app_repo: &Path) -> PathBuf {
     let name = app_repo
@@ -584,12 +609,13 @@ async fn run_command(mut command: tokio::process::Command, program: &str, args: 
     if status.success() {
         Ok(String::from_utf8_lossy(&out).trim().to_string())
     } else {
-        Err(format!(
-            "{} {} failed: {}",
-            program,
-            args.join(" "),
-            String::from_utf8_lossy(&err).trim()
-        ))
+        // Tools like the app's login gate explain themselves on stdout.
+        let out = String::from_utf8_lossy(&out);
+        let lines: Vec<&str> = out.trim().lines().collect();
+        let tail = lines[lines.len().saturating_sub(15)..].join("\n");
+        let details = [tail.trim(), String::from_utf8_lossy(&err).trim()].iter()
+            .filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("\n");
+        Err(format!("{} {} failed: {}", program, args.join(" "), details))
     }
 }
 
@@ -710,6 +736,10 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
     progress("@step check");
     progress("Reading your shell environment…");
     let mut env = shell_env(settings).await;
+    if let Some(l) = &login {
+        env.insert("TEST_EMAIL".into(), l.email.clone());
+        env.insert("TEST_PASSWORD".into(), l.password.clone());
+    }
     let checks = preflight(settings, &env).await;
     for check in &checks {
         progress(&check.line());
@@ -723,10 +753,6 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
         Some(l) => Some(api_credential(&l.email, &l.password)?),
         None => None,
     };
-    if let Some(l) = &login {
-        env.insert("TEST_EMAIL".into(), l.email.clone());
-        env.insert("TEST_PASSWORD".into(), l.password.clone());
-    }
 
     let workspace = ensure_workspace(settings, &env, &progress).await?;
     let api_url = settings
@@ -1002,6 +1028,27 @@ mod tests {
         let checks = preflight(&settings, &env).await;
         assert_eq!(checks.iter().find(|c| c.label == "App folder").unwrap().level, Level::Ok);
         assert!(checks.iter().any(|c| c.label == "make"));
+    }
+
+    async fn login_check(settings: &Settings, env: &HashMap<String, String>) -> Level {
+        preflight(settings, env).await.into_iter().find(|c| c.label == "API login").unwrap().level
+    }
+
+    #[tokio::test]
+    async fn preflight_needs_an_api_login() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Makefile"), "dev:\n").unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        let settings = Settings { app_repo: Some(dir.path().to_path_buf()), ..Settings::default() };
+        let mut env: HashMap<String, String> = std::env::vars().filter(|(k, _)| k != "TEST_EMAIL").collect();
+        assert_eq!(login_check(&settings, &env).await, Level::Fail);
+        std::fs::write(dir.path().join(".env"), "TEST_EMAIL=\nTEST_PASSWORD=x\n").unwrap();
+        assert_eq!(login_check(&settings, &env).await, Level::Fail);
+        std::fs::write(dir.path().join(".env"), "TEST_EMAIL=a@b.c\nTEST_PASSWORD=\"x\"\n").unwrap();
+        assert_eq!(login_check(&settings, &env).await, Level::Ok);
+        std::fs::remove_file(dir.path().join(".env")).unwrap();
+        env.insert("TEST_EMAIL".into(), "a@b.c".into());
+        assert_eq!(login_check(&settings, &env).await, Level::Ok);
     }
 
     #[test]

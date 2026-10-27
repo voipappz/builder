@@ -61,10 +61,10 @@
       <div class="row"><input id="app-repo" required placeholder="C:\Projects\app"><button type="button" id="browse-app">Browse</button></div>
       <p class="hint">Use a Git checkout of voipappz/app. On Windows, choose the checkout inside WSL (<code>\\wsl.localhost\&lt;distro&gt;\…</code>): Builder runs the app there with its Makefile.</p>
       <h2>2. Your API</h2>
-      <p>The previews connect to this API for account data. The agent can optionally inspect it with read-only tools.</p>
+      <p>The previews connect to this API for account data. The app signs in with your API login; the agent can inspect the API with read-only tools.</p>
       <label for="api-url">Hosted API address</label><input id="api-url" type="url" required value="https://switch.voipappz.io">
       <p class="hint">Use the hosted VoipAppz API. You do not need to install or run voipappz-api locally.</p>
-      <details><summary>API login (optional): for the app and the agent’s read-only tools</summary>
+      <details open><summary>API login: the app signs in with it</summary>
         <label for="api-email">API account email</label><input id="api-email" type="email" autocomplete="username">
         <label for="api-password">API password</label><input id="api-password" type="password" autocomplete="off">
         <p class="hint">Used only for this Builder session: the app’s login (<code>make setup</code>/<code>make dev</code>) and the agent’s read-only API tools. Not saved by Builder and never passed to the coding agent. Leave blank if the app checkout already has its login in <code>.env</code>.</p>
