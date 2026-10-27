@@ -139,14 +139,18 @@ pub fn create_shell_command(
     #[cfg(target_os = "windows")]
     {
         if let Some(distro) = wsl_distro {
-            let env_prefix = wsl_env_assignments(&env);
-            let full_command = if env_prefix.is_empty() {
-                cmd.to_string()
-            } else {
-                format!("{} {}", env_prefix.join(" "), cmd)
+            // PATH (the distro's own) goes on the command line; everything
+            // else, logins and API keys included, through WSLENV, so it is
+            // not visible in the process list.
+            let (path, rest): (Vec<_>, Vec<_>) = env.into_iter().partition(|(k, _)| k == "PATH");
+            let full_command = match path.first() {
+                Some((_, v)) => format!("PATH={} {}", shell_quote(v), cmd),
+                None => cmd.to_string(),
             };
 
             let mut command = command_with_limited_env("wsl.exe");
+            command.env("WSLENV", wslenv(std::env::var("WSLENV").ok(), rest.iter().map(|(k, _)| k.as_str())));
+            command.envs(rest);
             command
                 .arg("-d")
                 .arg(distro)
@@ -189,11 +193,14 @@ pub fn create_shell_command(
     }
 }
 
-#[cfg(target_os = "windows")]
-fn wsl_env_assignments(env: &HashMap<String, String>) -> Vec<String> {
-    env.iter()
-        .map(|(k, v)| format!("{}={}", k, shell_quote(v)))
-        .collect()
+/// WSLENV naming `names` for wsl.exe to pass on unchanged (`/u`: Windows to
+/// WSL only), after whatever WSLENV already holds.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn wslenv<'a>(existing: Option<String>, names: impl Iterator<Item = &'a str>) -> String {
+    existing.into_iter().filter(|e| !e.is_empty())
+        .chain(names.map(|name| format!("{name}/u")))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 #[cfg(target_os = "windows")]
@@ -319,4 +326,14 @@ pub fn spawn_command(mut command: Command) -> std::io::Result<ChildProcess> {
 pub fn spawn_command(mut command: Command) -> std::io::Result<ChildProcess> {
     let child = command.spawn()?;
     Ok(ChildProcess { child })
+}
+
+#[cfg(test)]
+mod wslenv_tests {
+    #[test]
+    fn wslenv_lists_names_not_values() {
+        assert_eq!(super::wslenv(None, ["TEST_EMAIL", "TEST_PASSWORD"].into_iter()), "TEST_EMAIL/u:TEST_PASSWORD/u");
+        assert_eq!(super::wslenv(Some("USERPROFILE/p".into()), ["A"].into_iter()), "USERPROFILE/p:A/u");
+        assert_eq!(super::wslenv(Some(String::new()), std::iter::empty()), "");
+    }
 }

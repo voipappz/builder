@@ -104,8 +104,8 @@ fn sh_quote(s: &str) -> String {
 }
 
 /// What a command inside the distro gets from Builder: its PATH and the
-/// variables Builder adds. wsl.exe passes these on the command line, and
-/// the distro gives HOME, USER and the rest itself.
+/// variables Builder adds. wsl.exe gets them through WSLENV (PATH on the
+/// command line), and the distro gives HOME, USER and the rest itself.
 fn wsl_env(env: &HashMap<String, String>) -> HashMap<String, String> {
     env.iter()
         .filter(|(k, _)| matches!(k.as_str(), "PATH" | "TEST_EMAIL" | "TEST_PASSWORD" | "VA_TEST_OTP" | "VITE_API_BASE_URL")
