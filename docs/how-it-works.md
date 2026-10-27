@@ -25,7 +25,7 @@ Browser tab  http://127.0.0.1:9832/?secret=…
 | CLI | `cli/` (`voipappz-builder`) | Starts Builder from a terminal |
 | Desktop app | `desktop/` | Tray icon that starts Builder and opens the browser |
 | Chat screen | `../app` `src/builder-client/` | `ChatView` over ACP, permission bar, agent modes, previews |
-| Agent | Claude Code via `@agentclientprotocol/claude-agent-acp` | Reads and edits the app, on the user's own Claude account |
+| Agent | Claude Code via `@agentclientprotocol/claude-agent-acp`, from the app's own packages (`bin/npm.sh exec -- claude-agent-acp`; `npx` until the app has it) | Reads and edits the app, on the user's own Claude account |
 
 The chat screen is app code, so a chat change ships with the app. The local
 server does what a web page cannot: start programs and read files. It runs

@@ -15,6 +15,16 @@ use crate::builder::{self, ApiMcp, BuilderConfig};
 use crate::command::{create_shell_command, spawn_command, ChildProcess};
 
 pub const DEFAULT_AGENT_COMMAND: &str = "npx -y @agentclientprotocol/claude-agent-acp@0.94.0";
+/// The agent from the app's own packages, on the app's pinned Node.
+pub const APP_AGENT_COMMAND: &str = "bin/npm.sh exec -- claude-agent-acp";
+
+/// The configured agent, except that the default `npx` one gives way to the
+/// app's own copy once the working copy's packages include it.
+pub fn agent_command(configured: &str, workspace: &Path) -> String {
+    let app_has_agent = workspace.join("bin/npm.sh").is_file()
+        && workspace.join("node_modules/.bin/claude-agent-acp").exists();
+    if configured == DEFAULT_AGENT_COMMAND && app_has_agent { APP_AGENT_COMMAND } else { configured }.to_string()
+}
 
 /// Setup steps, in order, as `(id, label)`. `start` reports entering a step
 /// with a progress line of `STEP_PREFIX` followed by the id, so a UI can
@@ -865,7 +875,7 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
         // The agent runs in the distro, so it works in the Linux path.
         workspace: PathBuf::from(command_path(&workspace, distro.as_deref())),
         client_url,
-        agent_command: settings.agent_command.clone(),
+        agent_command: agent_command(&settings.agent_command, &workspace),
         agent_env,
         wsl_distro: distro,
         mcp_servers: Vec::new(),
@@ -1049,6 +1059,18 @@ mod tests {
         std::fs::remove_file(dir.path().join(".env")).unwrap();
         env.insert("TEST_EMAIL".into(), "a@b.c".into());
         assert_eq!(login_check(&settings, &env).await, Level::Ok);
+    }
+
+    #[test]
+    fn the_apps_own_agent_replaces_npx() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(agent_command(DEFAULT_AGENT_COMMAND, dir.path()), DEFAULT_AGENT_COMMAND);
+        std::fs::create_dir_all(dir.path().join("bin")).unwrap();
+        std::fs::create_dir_all(dir.path().join("node_modules/.bin")).unwrap();
+        std::fs::write(dir.path().join("bin/npm.sh"), "").unwrap();
+        std::fs::write(dir.path().join("node_modules/.bin/claude-agent-acp"), "").unwrap();
+        assert_eq!(agent_command(DEFAULT_AGENT_COMMAND, dir.path()), APP_AGENT_COMMAND);
+        assert_eq!(agent_command("my-agent --acp", dir.path()), "my-agent --acp");
     }
 
     #[test]
