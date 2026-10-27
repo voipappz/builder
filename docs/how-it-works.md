@@ -102,11 +102,9 @@ run `make dev` and `make tenant` in `voipappz-api`.
   voipappz/app, starts the CLI with `--start-app` (worktree, `make setup`,
   `make dev`), then checks the Builder page, the app and the agent's ACP
   `initialize`. It needs `TEST_EMAIL` and `TEST_PASSWORD` for the app's login.
-- `.github/workflows/installers.yml` builds the desktop app for Linux
-  (`.deb`, `.AppImage`), Windows (`.exe`) and macOS (`.dmg`) on pushes to
-  `main` that touch the app, or on demand. A `v*` tag also creates a draft
-  release with the installers; publish it with `gh release edit <tag>
-  --draft=false`.
+- `.github/workflows/installers.yml` builds the Windows installer (`.exe`)
+  on pushes to `main` that touch the app, or on demand. A `v*` tag also
+  publishes it as the latest GitHub release.
 - Before tagging, set the same version in `Cargo.toml` and
   `desktop/tauri.conf.json`.
 - Installers are not code-signed yet, and the desktop app has no updater.

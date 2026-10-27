@@ -2,7 +2,7 @@ name: Installers
 
 # Builds only the Windows desktop installer to conserve CI resources.
 # Every run uploads the installers as workflow artifacts; a v* tag also
-# attaches them to a draft GitHub release. Not code-signed yet, so Windows
+# publishes them as the latest GitHub release. Not code-signed yet, so Windows
 # SmartScreen will warn on first open.
 
 on:
@@ -73,5 +73,5 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          draft: true
+          make_latest: true
           files: dist/*
