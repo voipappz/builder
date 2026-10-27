@@ -6,7 +6,8 @@
 #
 #   TEST_EMAIL=… TEST_PASSWORD=… scripts/e2e.sh [work-dir]
 #
-# APP_REF picks the app branch (default main). The CLI binary comes from
+# APP_REF picks the app branch (default main), APP_PORT the app's port
+# (default 3000; an app already answering there is used instead of make dev). The CLI binary comes from
 # `cargo build`; set BUILDER_BIN to use another one.
 set -euo pipefail
 
@@ -16,6 +17,7 @@ work=$(realpath -m "${1:-${RUNNER_TEMP:-/tmp}/builder-e2e}")
 app_ref=${APP_REF:-main}
 api_url=${VOIPAPPZ_API_URL:-https://switch.voipappz.io}
 port=${BUILDER_PORT:-9832}
+app_port=${APP_PORT:-3000}
 root=$(cd "$(dirname "$0")/.." && pwd)
 bin=${BUILDER_BIN:-$root/target/debug/voipappz-builder}
 log=$work/builder.log
@@ -26,9 +28,12 @@ state=${XDG_STATE_HOME:-$HOME/.local/state}/voipappz-builder
 echo "== Clone voipappz/app ($app_ref) into $work/app"
 rm -rf "$work" && mkdir -p "$work"
 git clone --quiet --branch "$app_ref" https://github.com/voipappz/app.git "$work/app"
+# Builder makes its worktree from origin/main; for another branch, make it here.
+[ "$app_ref" = main ] || git -C "$work/app" worktree add --quiet -b builder/work "$work/app-builder" "origin/$app_ref"
 
 echo "== Start Builder (make setup, make dev)"
 "$bin" --app-repo "$work/app" --start-app --api-url "$api_url" --port "$port" \
+  --client-url "http://localhost:$app_port" \
   --url-file "$work/url" >"$log" 2>&1 &
 builder=$!
 stop() { kill "$builder" 2>/dev/null || true; wait "$builder" 2>/dev/null || true; }
@@ -55,6 +60,7 @@ status=$(curl -s -o /dev/null -w '%{http_code}' "$url")
 echo "✓ Builder page answers"
 
 echo "== App dev server"
+grep -q "An app already answers" "$log" && fail "another app answers on port $app_port; stop it or set APP_PORT"
 app_port=$(sed -n 's/.*make dev PORT=\([0-9]*\).*/\1/p' "$log" | head -n 1)
 [ -n "$app_port" ] || fail "Builder did not start make dev"
 curl -sf -o /dev/null "http://localhost:$app_port/" || fail "the app does not answer on port $app_port"

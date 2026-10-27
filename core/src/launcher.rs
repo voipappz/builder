@@ -201,14 +201,17 @@ pub async fn preflight(settings: &Settings, env: &HashMap<String, String>) -> Ve
         }
     }
 
-    // `make setup` ends by signing in; without a login and no TTY it stops.
-    if let Some(repo) = repo {
-        let given = env.get("TEST_EMAIL").is_some_and(|e| !e.is_empty());
-        if given || has_app_login(repo) || has_app_login(&default_worktree(repo)) {
-            checks.push(Check::new("API login", Level::Ok, if given { "entered in setup" } else { "in the app's .env" }));
+    // `make setup` and `make dev` start with the app's login gate; without a
+    // login and no TTY it stops. A login saved in .env is in `env` already
+    // (add_saved_login).
+    let setup_due = planned_workspace(settings).is_none_or(|w| !w.join(SETUP_DONE).is_file());
+    if repo.is_some() && (settings.start_app || setup_due) {
+        let set = |key: &str| env.get(key).is_some_and(|v| !v.is_empty());
+        if set("TEST_EMAIL") && set("TEST_PASSWORD") {
+            checks.push(Check::new("API login", Level::Ok, "set"));
         } else {
             checks.push(Check::new("API login", Level::Fail,
-                "none; enter your API email and password in Builder's setup. The app's make setup signs in with them."));
+                "none; enter your API email and password in Builder's setup. The app's make setup and make dev sign in with them."));
         }
     }
 
@@ -530,19 +533,41 @@ fn start_dev_server(workspace: &Path, env: HashMap<String, String>, port: u16, d
     spawn_command(command).map_err(|e| format!("could not start make dev: {}", e))
 }
 
-/// Whether the app checkout at `dir` can sign in without asking: a login in
-/// its .env, or a token the login gate already cached.
-pub fn has_app_login(dir: &Path) -> bool {
-    if dir.join(".env.token").is_file() {
-        return true;
-    }
-    let text = std::fs::read_to_string(dir.join(".env")).unwrap_or_default();
-    let set = |key: &str| text.lines().any(|line| {
+/// The login saved in a checkout's .env (TEST_EMAIL, TEST_PASSWORD). A cached
+/// .env.token is not enough: the app's login gate asks for both first.
+pub fn app_login_in(dir: &Path) -> Option<(String, String)> {
+    let text = std::fs::read_to_string(dir.join(".env")).ok()?;
+    let value = |key: &str| text.lines().find_map(|line| {
         line.trim().strip_prefix(key).and_then(|rest| rest.strip_prefix('='))
-            .is_some_and(|value| !value.trim().trim_matches(|c| c == '"' || c == '\'').is_empty())
-    });
-    set("TEST_EMAIL") && set("TEST_PASSWORD")
+            .map(|value| value.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
+    }).filter(|value| !value.is_empty());
+    Some((value("TEST_EMAIL")?, value("TEST_PASSWORD")?))
 }
+
+pub fn has_app_login(dir: &Path) -> bool {
+    app_login_in(dir).is_some()
+}
+
+/// Unless a login was entered, the one saved in the workspace's or the app
+/// repository's .env. Builder's new worktree has no .env of its own yet.
+pub fn add_saved_login(settings: &Settings, env: &mut HashMap<String, String>) {
+    if env.get("TEST_EMAIL").is_some_and(|e| !e.is_empty()) {
+        return;
+    }
+    let dirs = planned_workspace(settings).into_iter().chain(settings.app_repo.clone());
+    if let Some((email, password)) = dirs.into_iter().find_map(|dir| app_login_in(&dir)) {
+        env.insert("TEST_EMAIL".into(), email);
+        env.insert("TEST_PASSWORD".into(), password);
+    }
+}
+
+/// The checkout Builder works in: the configured workspace, or its worktree.
+fn planned_workspace(settings: &Settings) -> Option<PathBuf> {
+    settings.workspace.clone().or_else(|| settings.app_repo.as_deref().map(default_worktree))
+}
+
+/// Present once `make setup` has installed the packages.
+const SETUP_DONE: &str = "node_modules/.package-lock.json";
 
 /// Builder's worktree next to the app repository: `../app` -> `../app-builder`.
 pub fn default_worktree(app_repo: &Path) -> PathBuf {
@@ -661,11 +686,7 @@ async fn ensure_workspace(
     progress: &impl Fn(&str),
 ) -> Result<PathBuf, String> {
     let app_repo = settings.app_repo.as_deref();
-    let workspace = match (&settings.workspace, app_repo) {
-        (Some(w), _) => w.clone(),
-        (None, Some(repo)) => default_worktree(repo),
-        (None, None) => return Err("Choose the app repository (../app) Builder works on.".into()),
-    };
+    let workspace = planned_workspace(settings).ok_or("Choose the app repository (../app) Builder works on.")?;
     let distro = wsl_distro(settings);
     let distro = distro.as_deref();
     let git = |args: Vec<String>, cwd: PathBuf| async move {
@@ -700,7 +721,7 @@ async fn ensure_workspace(
     // npm writes node_modules/.package-lock.json last; without it the app's
     // setup has not finished. `make setup` installs Node (mise), runs npm ci
     // and checks the login; it is safe to run again.
-    if !workspace.join("node_modules/.package-lock.json").is_file() {
+    if !workspace.join(SETUP_DONE).is_file() {
         let setup = || run_on(distro, "make", &["setup"], &workspace, env, Duration::from_secs(20 * 60));
         report_progress("Running the app's setup (make setup): Node, packages and login; the first time takes a few minutes", progress, setup()).await
             .map_err(|e| format!("{e}\n\nThe app's setup failed. If it asks for a login, enter your API email and password in Builder's setup, \
@@ -750,6 +771,16 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
         env.insert("TEST_EMAIL".into(), l.email.clone());
         env.insert("TEST_PASSWORD".into(), l.password.clone());
     }
+    add_saved_login(settings, &mut env);
+    let api_url = settings
+        .api_url
+        .clone()
+        .or_else(|| settings.api_dir.as_deref().and_then(api_url_from_dir));
+    // Vite gives process environment priority over existing .env files, and
+    // the login gate in `make setup` signs in to it: set before setup.
+    if let Some(api) = &api_url {
+        env.insert("VITE_API_BASE_URL".into(), api.clone());
+    }
     let checks = preflight(settings, &env).await;
     for check in &checks {
         progress(&check.line());
@@ -765,16 +796,6 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
     };
 
     let workspace = ensure_workspace(settings, &env, &progress).await?;
-    let api_url = settings
-        .api_url
-        .clone()
-        .or_else(|| settings.api_dir.as_deref().and_then(api_url_from_dir));
-
-    // Vite gives process environment priority over existing .env files.
-    // The selected mothership must also be used when the worktree has an old .env.
-    if let Some(api) = &api_url {
-        env.insert("VITE_API_BASE_URL".into(), api.clone());
-    }
 
     // The app's API proxy uses the same API as the agent. Written once; an
     // existing .env is never changed.
@@ -1047,18 +1068,31 @@ mod tests {
     #[tokio::test]
     async fn preflight_needs_an_api_login() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("Makefile"), "dev:\n").unwrap();
-        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
-        let settings = Settings { app_repo: Some(dir.path().to_path_buf()), ..Settings::default() };
-        let mut env: HashMap<String, String> = std::env::vars().filter(|(k, _)| k != "TEST_EMAIL").collect();
+        let repo = dir.path().join("app");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("Makefile"), "dev:\n").unwrap();
+        std::fs::write(repo.join("package.json"), "{}").unwrap();
+        let mut settings = Settings { app_repo: Some(repo.clone()), start_app: false, ..Settings::default() };
+        let env: HashMap<String, String> = std::env::vars().filter(|(k, _)| !k.starts_with("TEST_")).collect();
+        let saved = |settings: &Settings| { let mut env = env.clone(); add_saved_login(settings, &mut env); env };
+        assert_eq!(login_check(&settings, &saved(&settings)).await, Level::Fail);
+        // A cached token alone does not get past the app's login gate.
+        std::fs::write(repo.join(".env.token"), "t").unwrap();
+        std::fs::write(repo.join(".env"), "TEST_EMAIL=\nTEST_PASSWORD=x\n").unwrap();
+        assert_eq!(login_check(&settings, &saved(&settings)).await, Level::Fail);
+        // The app repository's login also serves Builder's new worktree.
+        std::fs::write(repo.join(".env"), "TEST_EMAIL=a@b.c\nTEST_PASSWORD=\"x\"\n").unwrap();
+        let env_with_login = saved(&settings);
+        assert_eq!(env_with_login["TEST_PASSWORD"], "x");
+        assert_eq!(login_check(&settings, &env_with_login).await, Level::Ok);
+        // Set up, and no make dev: no login gate runs, so none is needed.
+        std::fs::remove_file(repo.join(".env")).unwrap();
+        let worktree = default_worktree(&repo);
+        std::fs::create_dir_all(worktree.join("node_modules")).unwrap();
+        std::fs::write(worktree.join(SETUP_DONE), "{}").unwrap();
+        assert!(preflight(&settings, &env).await.iter().all(|c| c.label != "API login"));
+        settings.start_app = true;
         assert_eq!(login_check(&settings, &env).await, Level::Fail);
-        std::fs::write(dir.path().join(".env"), "TEST_EMAIL=\nTEST_PASSWORD=x\n").unwrap();
-        assert_eq!(login_check(&settings, &env).await, Level::Fail);
-        std::fs::write(dir.path().join(".env"), "TEST_EMAIL=a@b.c\nTEST_PASSWORD=\"x\"\n").unwrap();
-        assert_eq!(login_check(&settings, &env).await, Level::Ok);
-        std::fs::remove_file(dir.path().join(".env")).unwrap();
-        env.insert("TEST_EMAIL".into(), "a@b.c".into());
-        assert_eq!(login_check(&settings, &env).await, Level::Ok);
     }
 
     #[test]

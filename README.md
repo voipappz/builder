@@ -135,7 +135,9 @@ asks before running commands.
 
 Claude Code must be signed in (`claude`) on this machine. The app's login
 gate reads `TEST_EMAIL`/`TEST_PASSWORD` from the environment or the
-worktree's `.env`; the desktop app passes the API login typed in onboarding.
+worktree's `.env`. Builder passes the API login typed in onboarding, or else
+the one saved in the worktree's or the app checkout's `.env`. A cached
+`.env.token` alone is not enough.
 
 Before setup, Builder runs pre-flight checks and shows each result: the app
 folder (a checkout with a Makefile, not on WSL or a share), `git`, `make`,
