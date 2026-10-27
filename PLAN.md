@@ -113,7 +113,17 @@ Decisions recorded 2026-10-25:
   the browser there; no native app is built. No Capacitor or Ionic shell,
   no Kotlin Multiplatform, no React Native: each would add a second
   codebase or build the agent cannot preview with HMR in a browser.
-  `voipappz/mobile` (an empty Capacitor start) is not part of the plan.
+- **Customer apps are React (decided 2026-10-27).** Apps customers build
+  with Builder use React + Vite + MUI, the same stack as `voipappz/app`,
+  the chat UI and the `app new` template. Agents write React most reliably,
+  edits stay local, Vite HMR shows them at once, and it fits the Lego
+  layout plan. Store apps, when wanted, wrap the same code with Capacitor
+  (optionally Ionic React); nothing is built for them yet. The local
+  `../mobile` checkout (Ionic 8 / Angular 21 / Capacitor 6, uncommitted,
+  not on GitHub) is not used; it serves only as a reference for which
+  end-user screens a customer starter needs. Next: a slim React customer
+  starter (user portal, phone, extensions, numbers, IVR, queues, calls)
+  carved from `voipappz/app`, and `app new` pointed at it.
 - **Phone-width preview in Builder.** A third preview frame shows the user
   portal at phone size from the same dev server, so "on mobile" requests
   can be checked in the chat loop. It is a browser frame, nothing more.
