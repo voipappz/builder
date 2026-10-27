@@ -192,6 +192,31 @@ fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
     Some(guard)
 }
 
+/// The Builder page in its own window (WebView2, Chromium, on Windows), not
+/// whatever browser is the default.
+fn open_builder(app: &AppHandle, url: &str) {
+    let Ok(parsed) = url.parse() else {
+        error!("Not a Builder address: {}", url);
+        return;
+    };
+    if let Some(window) = app.get_webview_window("builder") {
+        let _ = window.navigate(parsed);
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+        return;
+    }
+    if let Err(error) = tauri::WebviewWindowBuilder::new(app, "builder", tauri::WebviewUrl::External(parsed))
+        .title("VoipAppz Builder")
+        .inner_size(1400.0, 900.0)
+        .min_inner_size(640.0, 480.0)
+        .maximized(true)
+        .build() {
+        error!("Could not open the Builder window, using the browser: {}", error);
+        open_target(app, url);
+    }
+}
+
 fn open_target(app: &AppHandle, target: &str) {
     #[cfg(target_os = "linux")]
     {
@@ -263,7 +288,7 @@ async fn restart(app: AppHandle) {
         Ok(started) => {
             info!("Builder is running; {}", started.api_note);
             progress(&app, "Builder is ready. Opening your browser. You can close this setup window.", "ready");
-            open_target(&app, &started.url);
+            open_builder(&app, &started.url);
             *running = Some(started);
         }
         Err(e) => {
@@ -286,7 +311,7 @@ async fn open_page(app: AppHandle) {
         }
     };
     match url {
-        Some(url) => open_target(&app, &url),
+        Some(url) => open_builder(&app, &url),
         None => restart(app).await,
     }
 }
@@ -312,6 +337,7 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let open = MenuItem::with_id(app, "open", "Open VoipAppz Builder", true, None::<&str>)?;
+            let browser = MenuItem::with_id(app, "browser", "Open in Browser", true, None::<&str>)?;
             let workspace = MenuItem::with_id(app, "workspace", "Connect App and API…", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let logs = MenuItem::with_id(app, "logs", "View Logs", true, None::<&str>)?;
@@ -330,7 +356,7 @@ pub fn run() {
             let separator2 = PredefinedMenuItem::separator(app)?;
             let menu = Menu::with_items(
                 app,
-                &[&open, &separator, &workspace, &settings, &logs, &separator2, &at_login, &restart_item, &quit, &version],
+                &[&open, &browser, &separator, &workspace, &settings, &logs, &separator2, &at_login, &restart_item, &quit, &version],
             )?;
 
             let mut tray = TrayIconBuilder::with_id(TRAY_ID)
@@ -341,6 +367,14 @@ pub fn run() {
                     match event.id.as_ref() {
                         "open" => {
                             tauri::async_runtime::spawn(open_page(app));
+                        }
+                        "browser" => {
+                            let url = app.state::<AppState>().running.try_lock().ok()
+                                .and_then(|running| running.as_ref().map(|r| r.url.clone()));
+                            match url {
+                                Some(url) => open_target(&app, &url),
+                                None => { tauri::async_runtime::spawn(open_page(app)); }
+                            }
                         }
                         "workspace" => {
                             show_onboarding(&app);

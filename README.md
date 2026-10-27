@@ -80,7 +80,7 @@ and has no automatic updates.
 5. Select **Start**. The window shows each step: installing Node, installing
    the app's packages, starting the app, starting the agent. The first run can
    take several minutes.
-6. When setup finishes, your browser opens the Builder page: chat on one side,
+6. When setup finishes, the Builder window opens: chat on one side,
    Admin and User previews on the other. Sign in to each preview with your
    VoipAppz account.
 
@@ -102,7 +102,7 @@ and has no automatic updates.
 - Tray icon dot: grey = not connected, yellow = setting up, green =
   running, red = setup failed. The setup window shows the seven setup
   steps as a checklist; **Setup details** below it has the full output.
-- Tray menu: **Open VoipAppz Builder**, **Connect App and API…**,
+- Tray menu: **Open VoipAppz Builder**, **Open in Browser**, **Connect App and API…**,
   **Settings**, **View Logs**, **Restart**, **Quit VoipAppz Builder**. Closing
   the setup window leaves Builder running in the tray.
 
