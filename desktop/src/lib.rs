@@ -21,6 +21,11 @@ struct AppState {
     api_login: std::sync::Mutex<Option<(String, launcher::ApiLogin)>>,
 }
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[tauri::command]
+fn app_version() -> &'static str { VERSION }
+
 #[tauri::command]
 fn onboarding_info() -> Result<Settings, String> { Settings::load() }
 
@@ -108,14 +113,14 @@ const TRAY_ID: &str = "main";
 /// Show the state in the tray: the app icon with a coloured dot (yellow
 /// while setting up, green when ready, red on failure, grey before setup).
 fn set_tray_status(app: &AppHandle, status: &str) {
-    let (colour, tooltip) = match status {
-        "ready" => ([46, 204, 64], "VoipAppz Builder — running"),
-        "failed" => ([229, 57, 53], "VoipAppz Builder — setup failed"),
-        "configure" => ([150, 150, 150], "VoipAppz Builder — not connected"),
-        _ => ([255, 196, 0], "VoipAppz Builder — setting up…"),
+    let (colour, state) = match status {
+        "ready" => ([46, 204, 64], "running"),
+        "failed" => ([229, 57, 53], "setup failed"),
+        "configure" => ([150, 150, 150], "not connected"),
+        _ => ([255, 196, 0], "setting up…"),
     };
     let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
-    let _ = tray.set_tooltip(Some(tooltip));
+    let _ = tray.set_tooltip(Some(format!("VoipAppz Builder {} — {}", VERSION, state)));
     if let Some(icon) = app.default_window_icon().map(|base| status_icon(base, colour)) {
         let _ = tray.set_icon(Some(icon));
     }
@@ -280,9 +285,10 @@ async fn open_page(app: AppHandle) {
 
 pub fn run() {
     let _log_guard = init_logging();
+    info!("VoipAppz Builder {}", VERSION);
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![startup_progress, onboarding_info, onboarding_folder, onboarding_check, onboarding_start, restart_builder])
+        .invoke_handler(tauri::generate_handler![app_version, startup_progress, onboarding_info, onboarding_folder, onboarding_check, onboarding_start, restart_builder])
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tauri::async_runtime::spawn(open_page(app.clone()));
         }))
@@ -310,16 +316,17 @@ pub fn run() {
                 None::<&str>,
             )?;
             let restart_item = MenuItem::with_id(app, "restart", "Restart", true, None::<&str>)?;
+            let version = MenuItem::with_id(app, "version", format!("Version {}", VERSION), false, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit VoipAppz Builder", true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;
             let separator2 = PredefinedMenuItem::separator(app)?;
             let menu = Menu::with_items(
                 app,
-                &[&open, &separator, &workspace, &settings, &logs, &separator2, &at_login, &restart_item, &quit],
+                &[&open, &separator, &workspace, &settings, &logs, &separator2, &at_login, &restart_item, &quit, &version],
             )?;
 
             let mut tray = TrayIconBuilder::with_id(TRAY_ID)
-                .tooltip("VoipAppz Builder")
+                .tooltip(format!("VoipAppz Builder {}", VERSION))
                 .menu(&menu)
                 .on_menu_event(move |app, event| {
                     let app = app.clone();

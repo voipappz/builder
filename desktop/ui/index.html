@@ -8,6 +8,7 @@
     * { box-sizing: border-box; }
     body { margin: 0; padding: 24px; background: #fff8ec; color: #111; font: 15px/1.5 system-ui, sans-serif; }
     header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    #version { font-weight: 400; font-size: 13px; }
     .brand { padding: 8px 18px; background: #fff56e; border: 2px solid #111; border-radius: 50%; font-weight: 800; }
     h1 { font-size: 26px; margin-bottom: 8px; }
     #status { overflow-wrap: anywhere; }
@@ -46,7 +47,7 @@
   </style>
 </head>
 <body>
-  <header><span class="brand">VoipAppz Builder</span><span id="timer">Starting…</span></header>
+  <header><span class="brand">VoipAppz Builder <span id="version"></span></span><span id="timer">Starting…</span></header>
   <h1 id="heading">Getting things ready</h1>
   <p id="status" role="status">Connecting to Builder’s setup progress…</p>
   <p id="actions" hidden><button type="button" id="restart">Retry setup</button></p>
@@ -118,6 +119,7 @@
       } catch (error) { connection.textContent = String(error); }
       finally { submitting = false; }
     };
+    invoke('app_version').then(version => { document.getElementById('version').textContent = 'v' + version; }).catch(() => {});
     invoke('onboarding_info').then(settings => {
       document.getElementById('app-repo').value = settings.app_repo || settings.workspace || '';
       document.getElementById('api-url').value = settings.api_dir ? 'https://switch.voipappz.io' : (settings.api_url || 'https://switch.voipappz.io');
