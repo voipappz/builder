@@ -96,6 +96,15 @@ pub(crate) fn command_path(path: &Path, distro: Option<&str>) -> String {
     }
 }
 
+/// `agent` run from `dir`: cmd.exe on Windows itself, sh everywhere else.
+fn agent_from(dir: &str, agent: &str, cmd_exe: bool) -> String {
+    if cmd_exe {
+        format!("cd /d \"{dir}\" && {agent}")
+    } else {
+        format!("cd {} && exec {agent}", sh_quote(dir))
+    }
+}
+
 /// Single-quote `s` for sh.
 pub(crate) fn sh_quote(s: &str) -> String {
     if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:@%+,".contains(c)) {
@@ -525,14 +534,16 @@ impl Running {
 }
 
 /// The bot's `make setup` when needed, then `make dev` on a free port near
-/// the one its builder.toml names. The bot gets no API login.
+/// the one its builder.toml names. The bot gets no API login and none of the
+/// agent's keys.
 async fn start_bot(dir: &Path, env: &HashMap<String, String>, distro: Option<String>, progress: &impl Fn(&str))
     -> Result<std::sync::Arc<crate::bot::Bot>, String> {
     let spec = crate::bot::read_spec(dir)?;
     let port = free_port(spec.port).await
         .ok_or_else(|| format!("No free port between {} and {} for the bot.", spec.port, spec.port + 19))?;
     let env: HashMap<String, String> = env.iter()
-        .filter(|(k, _)| !matches!(k.as_str(), "TEST_EMAIL" | "TEST_PASSWORD" | "VA_MCP_BASIC"))
+        .filter(|(k, _)| !matches!(k.as_str(), "TEST_EMAIL" | "TEST_PASSWORD" | "VA_TEST_OTP" | "VA_MCP_BASIC")
+            && !k.starts_with("ANTHROPIC_") && !k.starts_with("CLAUDE_"))
         .map(|(k, v)| (k.clone(), v.clone())).collect();
     let bot = crate::bot::Bot::new(spec, dir.to_path_buf(), port, distro, env);
     progress(&format!("Voice bot: {} in {}", bot.spec.name, dir.display()));
@@ -897,7 +908,16 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
             progress("No voice bot folder chosen.");
             None
         }
-        Some(dir) => Some(start_bot(dir, &env, wsl_distro(settings), &progress).await?),
+        Some(dir) => {
+            // Builder runs the bot, and the agent works in it, inside the app's
+            // distro: a folder in another one would be a different checkout.
+            let bot_distro = crate::wsl::location(&dir.to_string_lossy()).map(|(distro, _)| distro);
+            if bot_distro != wsl_distro(settings) {
+                return Err(format!("The voice bot folder {} must be on the same system as the app ({}).",
+                    dir.display(), wsl_distro(settings).map_or("this computer".into(), |d| format!("WSL {d}"))));
+            }
+            Some(start_bot(dir, &env, bot_distro, &progress).await?)
+        }
     };
 
     let mut api_mcp = None;
@@ -939,7 +959,7 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
     let agent_dir = settings.bot_dir.clone().unwrap_or_else(|| workspace.clone());
     let mut agent = agent_command(&settings.agent_command, &workspace);
     if settings.bot_dir.is_some() {
-        agent = format!("cd {} && exec {}", sh_quote(&command_path(&workspace, distro.as_deref())), agent);
+        agent = agent_from(&command_path(&workspace, distro.as_deref()), &agent, distro.is_none() && cfg!(windows));
     }
     let config = BuilderConfig {
         port,
@@ -987,6 +1007,12 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_agent_starts_from_the_app_folder() {
+        assert_eq!(agent_from("/home/a b/app", "npx x", false), "cd '/home/a b/app' && exec npx x");
+        assert_eq!(agent_from(r"C:\app", "npx x", true), r#"cd /d "C:\app" && npx x"#);
+    }
 
     #[cfg(unix)]
     #[tokio::test]

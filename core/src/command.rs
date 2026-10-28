@@ -130,6 +130,16 @@ pub fn cleanup_appimage_env(cmd: &mut std::process::Command) {
     }
 }
 
+/// Logins Builder may hold in its own environment. A command gets one only
+/// when its caller passes it, never by inheritance.
+const LOGIN_VARS: [&str; 4] = ["TEST_EMAIL", "TEST_PASSWORD", "VA_TEST_OTP", "VA_MCP_BASIC"];
+
+fn drop_unpassed_logins(command: &mut Command, env: &HashMap<String, String>) {
+    for name in LOGIN_VARS.iter().filter(|name| !env.contains_key(**name)) {
+        command.env_remove(name);
+    }
+}
+
 pub fn create_shell_command(
     cmd: &str,
     env: HashMap<String, String>,
@@ -149,6 +159,7 @@ pub fn create_shell_command(
             };
 
             let mut command = command_with_limited_env("wsl.exe");
+            drop_unpassed_logins(&mut command, &rest.iter().cloned().collect());
             command.env("WSLENV", wslenv(std::env::var("WSLENV").ok(), rest.iter().map(|(k, _)| k.as_str())));
             command.envs(rest);
             command
@@ -167,6 +178,7 @@ pub fn create_shell_command(
         } else {
             // Windows cmd case: use .current_dir()
             let mut command = command_with_limited_env("cmd.exe");
+            drop_unpassed_logins(&mut command, &env);
             command
                 .arg("/s")
                 .arg("/c")
@@ -183,6 +195,7 @@ pub fn create_shell_command(
         // Unix case: use .current_dir()
         // Also create a new process group so we can kill all descendants
         let mut command = command_with_limited_env("sh");
+        drop_unpassed_logins(&mut command, &env);
         command
             .arg("-c")
             .arg(cmd)

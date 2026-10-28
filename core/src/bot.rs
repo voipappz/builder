@@ -21,6 +21,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -73,13 +74,32 @@ pub fn read_spec(dir: &Path) -> Result<BotSpec, String> {
     Ok(spec)
 }
 
-/// The shared token the bot asks of Earshot, from the bot's `.env`.
+/// The shared token the bot asks of Earshot, from the bot's `.env`, read as
+/// `make dev` sources it: `export` allowed, comments skipped, the last
+/// assignment wins.
 pub fn read_token(dir: &Path) -> Option<String> {
     let text = std::fs::read_to_string(dir.join(".env")).ok()?;
     text.lines()
-        .find_map(|line| line.trim().strip_prefix("EARSHOT_BOT_TOKEN="))
-        .map(|v| v.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
+        .filter_map(|line| {
+            let line = line.trim();
+            let line = line.strip_prefix("export ").map(str::trim_start).unwrap_or(line);
+            let (key, value) = line.split_once('=')?;
+            (key == "EARSHOT_BOT_TOKEN").then(|| env_value(value))
+        })
+        .next_back()
         .filter(|v| !v.is_empty())
+}
+
+/// A `.env` value as sh reads it: quoted up to the closing quote, otherwise
+/// up to a ` #` comment.
+fn env_value(value: &str) -> String {
+    let value = value.trim();
+    for quote in ['"', '\''] {
+        if let Some(rest) = value.strip_prefix(quote) {
+            return rest.split(quote).next().unwrap_or_default().to_string();
+        }
+    }
+    value.split(" #").next().unwrap_or_default().trim().to_string()
 }
 
 /// What the bot's health address said.
@@ -102,6 +122,8 @@ pub struct Bot {
     process: Mutex<Option<ChildProcess>>,
     /// One start at a time: a second restart waits for the first.
     starting: Mutex<()>,
+    /// Set when Builder stops: a restart still waiting does not start it again.
+    stopped: AtomicBool,
 }
 
 impl std::fmt::Debug for Bot {
@@ -112,11 +134,13 @@ impl std::fmt::Debug for Bot {
 
 impl Bot {
     pub fn new(spec: BotSpec, dir: PathBuf, port: u16, distro: Option<String>, env: HashMap<String, String>) -> Self {
-        Self { spec, dir, port, distro, env, process: Mutex::new(None), starting: Mutex::new(()) }
+        Self { spec, dir, port, distro, env, process: Mutex::new(None), starting: Mutex::new(()),
+            stopped: AtomicBool::new(false) }
     }
 
-    pub fn log_path() -> PathBuf {
-        state_dir().join("bot.log")
+    /// One log per port, so two Builders' bots do not share one.
+    pub fn log_path(&self) -> PathBuf {
+        state_dir().join(format!("bot-{}.log", self.port))
     }
 
     fn url(&self, path: &str) -> String {
@@ -160,24 +184,40 @@ impl Bot {
     /// answers. `progress` gets a line every few seconds while it waits.
     pub async fn start(&self, progress: &impl Fn(&str)) -> Result<Health, String> {
         let _one = self.starting.lock().await;
-        self.stop().await;
+        if self.stopped.load(Ordering::SeqCst) {
+            return Err("Builder is stopping.".into());
+        }
+        self.process.lock().await.take();
         std::fs::create_dir_all(state_dir()).map_err(|e| e.to_string())?;
-        let log = std::fs::File::create(Self::log_path()).map_err(|e| e.to_string())?;
+        let log = std::fs::File::create(self.log_path()).map_err(|e| e.to_string())?;
         let log_err = log.try_clone().map_err(|e| e.to_string())?;
         let script = format!("make dev PORT={}", self.port);
         let distro = self.distro.as_deref();
         let mut command = match distro {
             Some(_) => create_shell_command(&format!("exec bash -lc {}", sh_quote(&script)), wsl_env(&self.env),
                 &command_path(&self.dir, distro), distro),
-            None => create_shell_command(&script, self.env.clone(), &self.dir.to_string_lossy(), None),
+            None => {
+                // Only what Builder chose to pass: none of its own logins or keys.
+                let mut command = create_shell_command(&script, HashMap::new(), &self.dir.to_string_lossy(), None);
+                command.env_clear().envs(&self.env);
+                command
+            }
         };
         command.stdin(Stdio::null()).stdout(Stdio::from(log)).stderr(Stdio::from(log_err));
         let child = spawn_command(command).map_err(|e| format!("could not start the bot's make dev: {e}"))?;
         *self.process.lock().await = Some(child);
+        // stop() may have run between the check above and now.
+        if self.stopped.load(Ordering::SeqCst) {
+            self.process.lock().await.take();
+            return Err("Builder is stopping.".into());
+        }
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(self.spec.start_timeout);
         let mut next_update = tokio::time::Instant::now();
         loop {
+            if self.stopped.load(Ordering::SeqCst) {
+                return Err("Builder is stopping.".into());
+            }
             let health = self.health().await;
             if health.up {
                 return Ok(health);
@@ -185,25 +225,33 @@ impl Bot {
             if let Some(child) = self.process.lock().await.as_mut() {
                 if let Some(status) = child.child.try_wait().map_err(|e| e.to_string())? {
                     return Err(format!("The bot's make dev stopped ({status}):\n{}\n\nSee {}",
-                        log_tail(12), Self::log_path().display()));
+                        self.log_tail(12), self.log_path().display()));
                 }
             }
             if tokio::time::Instant::now() > deadline {
                 return Err(format!("The bot did not answer at {} within {}s; see {}",
-                    self.url(&self.spec.health), self.spec.start_timeout, Self::log_path().display()));
+                    self.url(&self.spec.health), self.spec.start_timeout, self.log_path().display()));
             }
             if tokio::time::Instant::now() >= next_update {
                 progress(&format!("Waiting for the bot at {} (the first start compiles it). Details: {}",
-                    self.url(&self.spec.health), Self::log_path().display()));
+                    self.url(&self.spec.health), self.log_path().display()));
                 next_update = tokio::time::Instant::now() + Duration::from_secs(10);
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
 
+    /// For good, when Builder stops. Dropping the process kills its whole tree.
     pub async fn stop(&self) {
-        // Dropping the process kills its whole tree.
+        self.stopped.store(true, Ordering::SeqCst);
         self.process.lock().await.take();
+    }
+
+    /// The last `n` lines of the bot's log.
+    pub fn log_tail(&self, n: usize) -> String {
+        let log = std::fs::read_to_string(self.log_path()).unwrap_or_default();
+        let lines: Vec<&str> = log.lines().collect();
+        lines[lines.len().saturating_sub(n)..].join("\n")
     }
 }
 
@@ -231,8 +279,8 @@ async fn restart(State(bot): State<Arc<Bot>>) -> Response {
     }
 }
 
-async fn log() -> Response {
-    ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], log_tail(200)).into_response()
+async fn log(State(bot): State<Arc<Bot>>) -> Response {
+    ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], bot.log_tail(200)).into_response()
 }
 
 /// The page talks to the bot as the switch would. A browser cannot send the
@@ -300,13 +348,6 @@ async fn bridge(client: WebSocket, url: String, token: String) {
     tokio::select! { _ = to_bot => {}, _ = to_page => {} }
 }
 
-/// The last `n` lines of the bot's log.
-pub fn log_tail(n: usize) -> String {
-    let log = std::fs::read_to_string(Bot::log_path()).unwrap_or_default();
-    let lines: Vec<&str> = log.lines().collect();
-    lines[lines.len().saturating_sub(n)..].join("\n")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,6 +365,12 @@ mod tests {
         assert_eq!(read_token(dir.path()), None);
         std::fs::write(dir.path().join(".env"), "OPENAI_API_KEY=k\nEARSHOT_BOT_TOKEN=\"abc\"\n").unwrap();
         assert_eq!(read_token(dir.path()).as_deref(), Some("abc"));
+        // As sh sources it: export, comments, the last assignment wins.
+        std::fs::write(dir.path().join(".env"),
+            "EARSHOT_BOT_TOKEN=old\n# EARSHOT_BOT_TOKEN=commented\nexport EARSHOT_BOT_TOKEN=new # a note\n").unwrap();
+        assert_eq!(read_token(dir.path()).as_deref(), Some("new"));
+        std::fs::write(dir.path().join(".env"), "EARSHOT_BOT_TOKEN='a b' # q\n").unwrap();
+        assert_eq!(read_token(dir.path()).as_deref(), Some("a b"));
     }
 
     /// A stand-in bot: echoes binary frames, answers text with "ok", and
@@ -397,6 +444,9 @@ h.HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()\n").unwrap();
         assert_eq!(health, Health { up: true, ready: false });
         bot.stop().await;
         tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!bot.health().await.up);
+        // A restart that comes after Builder stopped does not start it again.
+        assert!(bot.start(&|_| {}).await.unwrap_err().contains("stopping"));
         assert!(!bot.health().await.up);
     }
 }
