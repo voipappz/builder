@@ -1,6 +1,6 @@
 //! VoipAppz Builder's local server.
 //!
-//! Serves two routes and nothing else:
+//! Serves these routes and nothing else:
 //!
 //! * `GET /` — the stub page. It carries local facts in a meta tag and loads
 //!   the chat client from the configured client address (the VoipAppz app),
@@ -8,6 +8,8 @@
 //! * `GET /socket/websocket` — the Phoenix websocket, limited to the ACP and
 //!   MCP channels. The agent, its working directory and its MCP servers come
 //!   from [`AgentPolicy`], never from the browser.
+//! * With a voice bot, `/bot/*`: its status, restart, log and an audio
+//!   WebSocket bridge (see [`crate::bot`]).
 //!
 //! Every request must carry the per-launch secret (`?secret=` or the
 //! `x-builder-secret` header), a Host naming this server, and, when present,
@@ -204,6 +206,9 @@ pub struct BuilderConfig {
     /// Shown to the user; never includes credentials.
     pub api_url: Option<String>,
     pub preview_url: String,
+    /// The voice bot beside the app, when a bot folder is chosen; the agent
+    /// then works in the bot's folder.
+    pub bot: Option<Arc<crate::bot::Bot>>,
 }
 
 impl BuilderConfig {
@@ -266,12 +271,26 @@ struct PageInfo<'a> {
     api_mcp: bool,
     agent: &'a str,
     previews: Previews,
+    /// The voice bot tab, when a bot folder is chosen.
+    bot: Option<BotPage<'a>>,
 }
 
 #[derive(Serialize)]
 struct Previews {
     admin: String,
     user: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BotPage<'a> {
+    name: &'a str,
+    status_path: &'static str,
+    restart_path: &'static str,
+    log_path: &'static str,
+    /// Audio in Earshot's native framing (PCM16 mono 16 kHz, 20 ms packets,
+    /// `speech_started` / `speech_stopped` / `clear` text events).
+    socket_path: &'static str,
 }
 
 pub fn router(config: BuilderConfig) -> Router {
@@ -330,6 +349,7 @@ fn router_with_state(config: BuilderConfig) -> (Router, WsState) {
         )
         .merge(ws_routes)
         .merge(api_routes)
+        .merge(config.bot.clone().map(crate::bot::routes).unwrap_or_default())
         .layer(middleware::from_fn(move |req: Request, next: Next| {
             let config = config.clone();
             async move { guard(&config, req, next).await }
@@ -454,6 +474,13 @@ fn stub_page(config: &BuilderConfig) -> Response<Body> {
             admin: admin.clone(),
             user: user.clone(),
         },
+        bot: config.bot.as_ref().map(|bot| BotPage {
+            name: &bot.spec.name,
+            status_path: "/bot/status",
+            restart_path: "/bot/restart",
+            log_path: "/bot/log",
+            socket_path: "/bot/socket",
+        }),
     };
     let info_json = serde_json::to_string(&info).expect("page info serializes");
     let nonce = Uuid::new_v4().simple().to_string();
@@ -593,6 +620,7 @@ mod tests {
             api_mcp: None,
             api_url: None,
             preview_url: "http://localhost:3000".to_string(),
+            bot: None,
         }
     }
 

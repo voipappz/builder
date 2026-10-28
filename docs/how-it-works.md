@@ -22,6 +22,7 @@ Browser tab  http://127.0.0.1:9832/?secret=…
 |---|---|---|
 | Local server | `core/src/builder.rs` | Serves the page, carries the chat to the agent, enforces the rules below |
 | Start-up | `core/src/launcher.rs` | Settings, worktree, dev server, API login, starts the server |
+| Voice bot | `core/src/bot.rs` | Runs a bot folder's `make setup`/`make dev`, its health, restart, log, and the audio bridge (`/bot/*`) |
 | CLI | `cli/` (`voipappz-builder`) | Starts Builder from a terminal |
 | Desktop app | `desktop/` | Tray icon that starts Builder and opens the browser |
 | Chat screen | `../app` `src/builder-client/` | `ChatView` over ACP, permission bar, agent modes, previews |

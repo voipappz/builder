@@ -37,6 +37,7 @@ pub const SETUP_STEPS: &[(&str, &str)] = &[
     ("workspace", "App working copy"),
     ("setup", "App setup (make setup)"),
     ("app", "App dev server (make dev)"),
+    ("bot", "Voice bot (make dev)"),
     ("api", "API connection"),
     ("server", "Builder connection"),
 ];
@@ -88,7 +89,7 @@ pub fn wsl_distro(settings: &Settings) -> Option<String> {
 }
 
 /// `path` as the commands see it: the Linux path inside the distro, or as is.
-fn command_path(path: &Path, distro: Option<&str>) -> String {
+pub(crate) fn command_path(path: &Path, distro: Option<&str>) -> String {
     match (distro, crate::wsl::location(&path.to_string_lossy())) {
         (Some(_), Some((_, linux))) => linux,
         _ => path.to_string_lossy().into_owned(),
@@ -96,7 +97,7 @@ fn command_path(path: &Path, distro: Option<&str>) -> String {
 }
 
 /// Single-quote `s` for sh.
-fn sh_quote(s: &str) -> String {
+pub(crate) fn sh_quote(s: &str) -> String {
     if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:@%+,".contains(c)) {
         return s.to_string();
     }
@@ -106,7 +107,7 @@ fn sh_quote(s: &str) -> String {
 /// What a command inside the distro gets from Builder: its PATH and the
 /// variables Builder adds. wsl.exe gets them through WSLENV (PATH on the
 /// command line), and the distro gives HOME, USER and the rest itself.
-fn wsl_env(env: &HashMap<String, String>) -> HashMap<String, String> {
+pub(crate) fn wsl_env(env: &HashMap<String, String>) -> HashMap<String, String> {
     env.iter()
         .filter(|(k, _)| matches!(k.as_str(), "PATH" | "TEST_EMAIL" | "TEST_PASSWORD" | "VA_TEST_OTP" | "VITE_API_BASE_URL")
             || k.starts_with("ANTHROPIC_") || k.starts_with("CLAUDE_"))
@@ -274,6 +275,9 @@ pub struct Settings {
     pub start_app: bool,
     pub port: u16,
     pub agent_command: String,
+    /// A voice bot folder (`builder.toml` with `kind = "bot"`). Builder runs
+    /// it beside the app, and the agent works in it instead of the app.
+    pub bot_dir: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -288,6 +292,7 @@ impl Default for Settings {
             start_app: true,
             port: 9832,
             agent_command: DEFAULT_AGENT_COMMAND.to_string(),
+            bot_dir: None,
         }
     }
 }
@@ -500,6 +505,7 @@ pub struct Running {
     shutdown: Option<oneshot::Sender<()>>,
     server: Option<tokio::task::JoinHandle<()>>,
     dev_server: Option<ChildProcess>,
+    bot: Option<std::sync::Arc<crate::bot::Bot>>,
 }
 
 impl Running {
@@ -512,7 +518,36 @@ impl Running {
             let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
         }
         self.dev_server.take();
+        if let Some(bot) = self.bot.take() {
+            bot.stop().await;
+        }
     }
+}
+
+/// The bot's `make setup` when needed, then `make dev` on a free port near
+/// the one its builder.toml names. The bot gets no API login.
+async fn start_bot(dir: &Path, env: &HashMap<String, String>, distro: Option<String>, progress: &impl Fn(&str))
+    -> Result<std::sync::Arc<crate::bot::Bot>, String> {
+    let spec = crate::bot::read_spec(dir)?;
+    let port = free_port(spec.port).await
+        .ok_or_else(|| format!("No free port between {} and {} for the bot.", spec.port, spec.port + 19))?;
+    let env: HashMap<String, String> = env.iter()
+        .filter(|(k, _)| !matches!(k.as_str(), "TEST_EMAIL" | "TEST_PASSWORD" | "VA_MCP_BASIC"))
+        .map(|(k, v)| (k.clone(), v.clone())).collect();
+    let bot = crate::bot::Bot::new(spec, dir.to_path_buf(), port, distro, env);
+    progress(&format!("Voice bot: {} in {}", bot.spec.name, dir.display()));
+    let setup = bot.setup_if_needed();
+    if report_progress("Running the bot's setup (make setup)", progress, setup).await? {
+        progress("The bot is set up.");
+    }
+    progress(&format!("Starting the bot (make dev PORT={port})…"));
+    let health = bot.start(progress).await?;
+    progress(&if health.ready {
+        format!("The bot answers on port {port}.")
+    } else {
+        format!("The bot runs on port {port} but is not ready for calls: put OPENAI_API_KEY in {}.", dir.join(".env").display())
+    });
+    Ok(std::sync::Arc::new(bot))
 }
 
 fn start_dev_server(workspace: &Path, env: HashMap<String, String>, port: u16, distro: Option<&str>) -> Result<ChildProcess, String> {
@@ -600,7 +635,7 @@ async fn run(program: &str, args: &[&str], cwd: &Path, env: &HashMap<String, Str
 
 /// Run `program` in `cwd` on this computer, or inside `distro` (the Linux
 /// form of `cwd` and the distro's own login shell, so its tools are found).
-async fn run_on(distro: Option<&str>, program: &str, args: &[&str], cwd: &Path, env: &HashMap<String, String>, limit: Duration) -> Result<String, String> {
+pub(crate) async fn run_on(distro: Option<&str>, program: &str, args: &[&str], cwd: &Path, env: &HashMap<String, String>, limit: Duration) -> Result<String, String> {
     match distro {
         None => run_with_timeout(program, args, cwd, env, limit).await,
         Some(distro) => {
@@ -856,6 +891,15 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
         }
     }
 
+    progress("@step bot");
+    let bot = match &settings.bot_dir {
+        None => {
+            progress("No voice bot folder chosen.");
+            None
+        }
+        Some(dir) => Some(start_bot(dir, &env, wsl_distro(settings), &progress).await?),
+    };
+
     let mut api_mcp = None;
     progress("@step api");
     progress("Checking the API connection…");
@@ -890,19 +934,27 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
     if distro.is_some() {
         agent_env = wsl_env(&agent_env);
     }
+    // With a bot, the agent changes the bot; it still runs from the app's
+    // packages, where Node and the agent are installed.
+    let agent_dir = settings.bot_dir.clone().unwrap_or_else(|| workspace.clone());
+    let mut agent = agent_command(&settings.agent_command, &workspace);
+    if settings.bot_dir.is_some() {
+        agent = format!("cd {} && exec {}", sh_quote(&command_path(&workspace, distro.as_deref())), agent);
+    }
     let config = BuilderConfig {
         port,
         secret: BuilderConfig::new_secret(),
         // The agent runs in the distro, so it works in the Linux path.
-        workspace: PathBuf::from(command_path(&workspace, distro.as_deref())),
+        workspace: PathBuf::from(command_path(&agent_dir, distro.as_deref())),
         client_url,
-        agent_command: agent_command(&settings.agent_command, &workspace),
+        agent_command: agent,
         agent_env,
         wsl_distro: distro,
         mcp_servers: Vec::new(),
         api_mcp,
         api_url,
         preview_url,
+        bot: bot.clone(),
     };
     let url = format!("http://127.0.0.1:{}/?secret={}", config.port, config.secret);
 
@@ -928,6 +980,7 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
         shutdown: Some(tx),
         server: Some(server),
         dev_server,
+        bot,
     })
 }
 

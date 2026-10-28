@@ -653,6 +653,7 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tokio-tungstenite 0.23.1",
+ "tokio-tungstenite 0.28.0",
  "tokio-util",
  "toml 0.8.2",
  "tower",

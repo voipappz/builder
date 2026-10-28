@@ -1,5 +1,6 @@
 pub mod command;
 pub use command::cleanup_appimage_env;
+pub mod bot;
 pub mod builder;
 pub mod config;
 pub mod launcher;

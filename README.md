@@ -133,6 +133,21 @@ the previews. When the API answers, it gives the agent its `/api/mcp` tools
 read-only. The agent edits files without asking (its "Accept edits" mode) and
 asks before running commands.
 
+### With a voice bot
+
+```text
+cargo run -p builder-cli -- --app-repo ../app --start-app \
+  --bot-dir ../pipecrab/examples/earshot-hebrew --open
+```
+
+A bot folder has a `builder.toml` with `kind = "bot"` and the same Makefile
+contract (`make setup`, `make dev PORT=<port>`, `make test`, `make check`).
+Builder runs it beside the app, waits for its health address, and the agent
+changes the bot instead of the app; the Admin and User previews stay. The
+page gets the bot's status, a restart (a Rust bot does not reload itself),
+its log, and an audio WebSocket bridge that adds the bot's token from its
+`.env`, so the page never holds it. The bot gets no API login.
+
 Claude Code must be signed in (`claude`) on this machine. The app's login
 gate reads `TEST_EMAIL`/`TEST_PASSWORD` from the environment or the
 worktree's `.env`. Builder passes the API login typed in onboarding, or else

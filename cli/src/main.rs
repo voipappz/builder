@@ -43,6 +43,11 @@ struct Cli {
     #[arg(long)]
     api_dir: Option<PathBuf>,
 
+    /// A voice bot folder (builder.toml with kind = "bot"). Builder runs it
+    /// beside the app, and the agent changes the bot.
+    #[arg(long)]
+    bot_dir: Option<PathBuf>,
+
     /// Command that starts the ACP agent.
     #[arg(long, env = "VOIPAPPZ_BUILDER_AGENT", default_value = DEFAULT_AGENT_COMMAND)]
     agent_command: String,
@@ -128,6 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         start_app: cli.start_app,
         port: cli.port,
         agent_command: cli.agent_command,
+        bot_dir: absolute(cli.bot_dir)?,
     };
 
     let running = launcher::start(&settings, |line| match line.strip_prefix(launcher::STEP_PREFIX) {
@@ -137,7 +143,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     eprintln!();
     eprintln!("VoipAppz Builder");
-    eprintln!("  workspace  {}", running.workspace.display());
+    eprintln!("  app        {}", running.workspace.display());
+    if let Some(dir) = &settings.bot_dir {
+        eprintln!("  bot        {} (the agent works here)", dir.display());
+    }
     eprintln!("  {}", running.api_note);
     eprintln!("  Open: {}", running.url);
     eprintln!();
