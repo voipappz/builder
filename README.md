@@ -148,6 +148,11 @@ page gets the bot's status, a restart (a Rust bot does not reload itself),
 its log, and an audio WebSocket bridge that adds the bot's token from its
 `.env`, so the page never holds it. The bot gets no API login.
 
+In the desktop app, choose the folder under **3. Your voice bot** in
+onboarding (tray: **Connect App, API and Bot…**); it is saved as `bot_dir`
+in `builder.toml`. The tray's **Restart Voice Bot** rebuilds and restarts it,
+and **View Voice Bot Log** opens its log.
+
 Claude Code must be signed in (`claude`) on this machine. The app's login
 gate reads `TEST_EMAIL`/`TEST_PASSWORD` from the environment or the
 worktree's `.env`. Builder passes the API login typed in onboarding, or else

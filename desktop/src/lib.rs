@@ -38,9 +38,10 @@ fn app_login(app_repo: String) -> bool {
 }
 
 #[tauri::command]
-async fn onboarding_folder(app: AppHandle, api: bool) -> Option<String> {
-    pick_workspace(&app, if api { "Choose the voipappz-api checkout" } else { "Choose the React app Git checkout (voipappz/app)" })
-        .await.map(|path| path.to_string_lossy().into_owned())
+async fn onboarding_folder(app: AppHandle, api: bool, bot: Option<bool>) -> Option<String> {
+    let title = if bot.unwrap_or(false) { "Choose the voice bot folder (with builder.toml)" }
+        else if api { "Choose the voipappz-api checkout" } else { "Choose the React app Git checkout (voipappz/app)" };
+    pick_workspace(&app, title).await.map(|path| path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -51,8 +52,8 @@ async fn onboarding_check(api_url: String, api_dir: String, email: String, passw
 }
 
 #[tauri::command]
-async fn onboarding_start(app: AppHandle, app_repo: String, api_url: String, api_dir: String, email: String, password: String) -> Result<(), String> {
-    let settings = launcher::onboarding_settings(Settings::load()?, &app_repo, &api_url, &api_dir)?;
+async fn onboarding_start(app: AppHandle, app_repo: String, api_url: String, api_dir: String, bot_dir: String, email: String, password: String) -> Result<(), String> {
+    let settings = launcher::onboarding_settings(Settings::load()?, &app_repo, &api_url, &api_dir, &bot_dir)?;
     let url = settings.api_url.clone().ok_or("Choose an API address.")?;
     launcher::check_api_connection(&url, &email, &password).await?;
     let login = if email.is_empty() && password.is_empty() { None } else {
@@ -259,6 +260,26 @@ async fn pick_workspace(app: &AppHandle, title: &str) -> Option<PathBuf> {
     rx.await.ok().flatten()
 }
 
+const NO_BOT: &str = "No voice bot is running. Choose a voice bot folder in Connect App, API and Bot.";
+
+fn running_bot(app: &AppHandle) -> Option<std::sync::Arc<builder_core::bot::Bot>> {
+    app.state::<AppState>().running.try_lock().ok()?.as_ref()?.bot()
+}
+
+/// After a change the agent made: the bot is a compiled program, so it
+/// rebuilds and starts again.
+async fn restart_bot(app: AppHandle) {
+    let Some(bot) = running_bot(&app) else { return show_error(&app, NO_BOT) };
+    set_tray_status(&app, "working");
+    match bot.start(&|_| {}).await {
+        Ok(_) => set_tray_status(&app, "ready"),
+        Err(e) => {
+            set_tray_status(&app, "failed");
+            show_error(&app, format!("The voice bot could not restart.\n\n{e}"));
+        }
+    }
+}
+
 /// Stop what runs, then start from the saved settings and open the page.
 async fn restart(app: AppHandle) {
     let state = app.state::<AppState>();
@@ -338,7 +359,7 @@ pub fn run() {
 
             let open = MenuItem::with_id(app, "open", "Open VoipAppz Builder", true, None::<&str>)?;
             let browser = MenuItem::with_id(app, "browser", "Open in Browser", true, None::<&str>)?;
-            let workspace = MenuItem::with_id(app, "workspace", "Connect App and API…", true, None::<&str>)?;
+            let workspace = MenuItem::with_id(app, "workspace", "Connect App, API and Bot…", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let logs = MenuItem::with_id(app, "logs", "View Logs", true, None::<&str>)?;
             let at_login = CheckMenuItem::with_id(
@@ -350,13 +371,15 @@ pub fn run() {
                 None::<&str>,
             )?;
             let restart_item = MenuItem::with_id(app, "restart", "Restart", true, None::<&str>)?;
+            let bot_restart = MenuItem::with_id(app, "bot_restart", "Restart Voice Bot", true, None::<&str>)?;
+            let bot_log = MenuItem::with_id(app, "bot_log", "View Voice Bot Log", true, None::<&str>)?;
             let version = MenuItem::with_id(app, "version", format!("Version {}", VERSION), false, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit VoipAppz Builder", true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;
             let separator2 = PredefinedMenuItem::separator(app)?;
             let menu = Menu::with_items(
                 app,
-                &[&open, &browser, &separator, &workspace, &settings, &logs, &separator2, &at_login, &restart_item, &quit, &version],
+                &[&open, &browser, &separator, &workspace, &settings, &logs, &bot_restart, &bot_log, &separator2, &at_login, &restart_item, &quit, &version],
             )?;
 
             let mut tray = TrayIconBuilder::with_id(TRAY_ID)
@@ -397,6 +420,13 @@ pub fn run() {
                         "restart" => {
                             tauri::async_runtime::spawn(restart(app));
                         }
+                        "bot_restart" => {
+                            tauri::async_runtime::spawn(restart_bot(app));
+                        }
+                        "bot_log" => match running_bot(&app) {
+                            Some(bot) => open_target(&app, &bot.log_path().to_string_lossy()),
+                            None => show_error(&app, NO_BOT),
+                        },
                         "quit" => {
                             tauri::async_runtime::spawn(async move {
                                 let state = app.state::<AppState>();

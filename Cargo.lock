@@ -608,7 +608,7 @@ dependencies = [
 
 [[package]]
 name = "builder-cli"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "builder-core",
  "clap",
@@ -619,7 +619,7 @@ dependencies = [
 
 [[package]]
 name = "builder-core"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -5897,7 +5897,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "voipappz-builder-desktop"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "builder-core",
  "serde",

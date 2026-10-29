@@ -474,7 +474,7 @@ pub fn is_network_path(path: &str) -> bool {
     path.starts_with("\\\\") || path.starts_with("//")
 }
 
-pub fn onboarding_settings(mut settings: Settings, app_repo: &str, api_url: &str, api_dir: &str) -> Result<Settings, String> {
+pub fn onboarding_settings(mut settings: Settings, app_repo: &str, api_url: &str, api_dir: &str, bot_dir: &str) -> Result<Settings, String> {
     if is_network_path(app_repo) && crate::wsl::location(app_repo).is_none() {
         return Err("This folder is on a network share. Choose a checkout on a local drive or inside WSL (\\\\wsl.localhost\\<distro>\\…).".into());
     }
@@ -491,7 +491,24 @@ pub fn onboarding_settings(mut settings: Settings, app_repo: &str, api_url: &str
     settings.workspace = None;
     settings.api_url = Some(url);
     settings.api_dir = api_dir;
+    settings.bot_dir = onboarding_bot_dir(app_repo, bot_dir)?;
     Ok(settings)
+}
+
+/// The voice bot folder, optional: a `builder.toml` with `kind = "bot"`, on
+/// the same system (WSL distro) as the app.
+fn onboarding_bot_dir(app_repo: &str, bot_dir: &str) -> Result<Option<PathBuf>, String> {
+    let bot_dir = bot_dir.trim();
+    if bot_dir.is_empty() {
+        return Ok(None);
+    }
+    let app_distro = crate::wsl::location(app_repo).map(|(distro, _)| distro);
+    if crate::wsl::location(bot_dir).map(|(distro, _)| distro) != app_distro {
+        return Err("Choose a voice bot folder on the same system as the app (the same WSL distro).".into());
+    }
+    let dir = PathBuf::from(bot_dir);
+    crate::bot::read_spec(&dir)?;
+    Ok(Some(if app_distro.is_some() { dir } else { dunce::canonicalize(dir).map_err(|e| e.to_string())? }))
 }
 
 pub fn onboarding_api_url(api_url: &str, api_dir: Option<&Path>) -> Result<String, String> {
@@ -518,6 +535,11 @@ pub struct Running {
 }
 
 impl Running {
+    /// The voice bot Builder runs beside the app, if a bot folder was chosen.
+    pub fn bot(&self) -> Option<std::sync::Arc<crate::bot::Bot>> {
+        self.bot.clone()
+    }
+
     /// Stop the server (and its agents) and the dev server it started.
     pub async fn stop(mut self) {
         if let Some(tx) = self.shutdown.take() {
@@ -1076,10 +1098,20 @@ mod tests {
         std::fs::write(dir.path().join("src/builder-client/main.jsx"), "").unwrap();
         let mut previous = Settings::default();
         previous.api_dir = Some(PathBuf::from("old-local-api"));
-        let settings = onboarding_settings(previous, dir.path().to_str().unwrap(), "https://switch.voipappz.io/", "").unwrap();
+        let settings = onboarding_settings(previous, dir.path().to_str().unwrap(), "https://switch.voipappz.io/", "", "").unwrap();
         assert_eq!(settings.api_url.as_deref(), Some("https://switch.voipappz.io"));
         assert!(settings.api_dir.is_none());
         assert!(settings.workspace.is_none());
+        assert!(settings.bot_dir.is_none());
+
+        // A voice bot folder is optional, and must say kind = "bot".
+        let bot = tempfile::tempdir().unwrap();
+        let app = dir.path().to_str().unwrap();
+        let api = "https://switch.voipappz.io";
+        assert!(onboarding_settings(Settings::default(), app, api, "", bot.path().to_str().unwrap()).is_err());
+        std::fs::write(bot.path().join("builder.toml"), "[builder]\nkind = \"bot\"\nname = \"Noa\"\n").unwrap();
+        let settings = onboarding_settings(Settings::default(), app, api, "", bot.path().to_str().unwrap()).unwrap();
+        assert_eq!(settings.bot_dir, Some(dunce::canonicalize(bot.path()).unwrap()));
     }
 
 
@@ -1212,10 +1244,10 @@ mod tests {
         assert!(is_network_path(r"\\server\share\app"));
         assert!(!is_network_path(r"C:\Users\nir\voipappz-app"));
         assert!(!is_network_path("/home/nir/voipappz/app"));
-        let share = onboarding_settings(Settings::default(), r"\\server\share\app", "https://switch.voipappz.io", "").unwrap_err();
+        let share = onboarding_settings(Settings::default(), r"\\server\share\app", "https://switch.voipappz.io", "", "").unwrap_err();
         assert!(share.contains("network share"), "{share}");
         // A WSL checkout gets past the share check (here it then lacks the app's files).
-        let wsl = onboarding_settings(Settings::default(), r"\\wsl.localhost\Debian\home\nir\voipappz\app", "https://switch.voipappz.io", "").unwrap_err();
+        let wsl = onboarding_settings(Settings::default(), r"\\wsl.localhost\Debian\home\nir\voipappz\app", "https://switch.voipappz.io", "", "").unwrap_err();
         assert!(!wsl.contains("network share"), "{wsl}");
     }
 

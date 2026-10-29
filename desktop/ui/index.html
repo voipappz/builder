@@ -72,6 +72,12 @@
         <p id="login-state" role="status">API login not set</p>
         <p class="hint">Used only for this Builder session: the app’s login (<code>make setup</code>/<code>make dev</code>) and the agent’s read-only API tools. Not saved by Builder and never passed to the coding agent. Leave blank if the app checkout already has its login in <code>.env</code>.</p>
       </details>
+      <h2>3. Your voice bot (optional)</h2>
+      <p>To build a voice bot, choose its folder: the coding agent then changes the bot, and Builder runs it beside the app.
+        Leave blank to change the app itself.</p>
+      <label for="bot-dir">Voice bot folder</label>
+      <div class="row"><input id="bot-dir" placeholder="\\wsl.localhost\Debian\home\you\pipecrab\examples\earshot-hebrew"><button type="button" id="browse-bot">Browse</button></div>
+      <p class="hint">A folder with a <code>builder.toml</code> saying <code>kind = "bot"</code>, on the same system as the app. Builder runs its <code>make setup</code> and <code>make dev</code>.</p>
       <p><button type="button" id="check-api">Check API connection</button></p>
       <p id="connection" role="status"></p>
       <button type="submit" id="start">Connect and open Builder</button>
@@ -96,19 +102,20 @@
     const stepStarted = {};
     function apiFields() {
       return { apiUrl: document.getElementById('api-url').value,
-        apiDir: '',
+        apiDir: '', botDir: document.getElementById('bot-dir').value.trim(),
         email: document.getElementById('api-email').value.trim(), password: document.getElementById('api-password').value };
     }
-    for (const [button, field, api] of [['browse-app', 'app-repo', false]]) {
+    for (const [button, field, bot] of [['browse-app', 'app-repo', false], ['browse-bot', 'bot-dir', true]]) {
       document.getElementById(button).onclick = async () => {
-        try { const path = await invoke('onboarding_folder', { api }); if (path) { document.getElementById(field).value = path; checkAppLogin(); } }
+        try { const path = await invoke('onboarding_folder', { api: false, bot }); if (path) { document.getElementById(field).value = path; if (!bot) checkAppLogin(); } }
         catch (error) { connection.textContent = String(error); }
       };
     }
     document.getElementById('check-api').onclick = async () => {
       const button = document.getElementById('check-api'); button.disabled = true;
       connection.textContent = 'Checking the API endpoint…';
-      try { connection.textContent = await invoke('onboarding_check', apiFields()); }
+      const { botDir, ...fields } = apiFields();
+      try { connection.textContent = await invoke('onboarding_check', fields); }
       catch (error) { connection.textContent = String(error); }
       finally { button.disabled = false; }
     };
@@ -142,6 +149,7 @@
     invoke('app_version').then(version => { document.getElementById('version').textContent = 'v' + version; }).catch(() => {});
     invoke('onboarding_info').then(settings => {
       document.getElementById('app-repo').value = settings.app_repo || settings.workspace || '';
+      document.getElementById('bot-dir').value = settings.bot_dir || '';
       document.getElementById('api-url').value = settings.api_dir ? 'https://switch.voipappz.io' : (settings.api_url || 'https://switch.voipappz.io');
       checkAppLogin();
     }).catch(error => { connection.textContent = String(error); });
