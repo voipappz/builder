@@ -152,16 +152,11 @@ pub fn create_shell_command(
             // PATH (the distro's own) goes on the command line; everything
             // else, logins and API keys included, through WSLENV, so it is
             // not visible in the process list.
-            let (path, rest): (Vec<_>, Vec<_>) = env.into_iter().partition(|(k, _)| k == "PATH");
-            let full_command = match path.first() {
-                Some((_, v)) => format!("PATH={} {}", shell_quote(v), cmd),
+            let (mut command, path) = wsl_exe(env);
+            let full_command = match path {
+                Some(v) => format!("PATH={} {}", shell_quote(&v), cmd),
                 None => cmd.to_string(),
             };
-
-            let mut command = command_with_limited_env("wsl.exe");
-            drop_unpassed_logins(&mut command, &rest.iter().cloned().collect());
-            command.env("WSLENV", wslenv(std::env::var("WSLENV").ok(), rest.iter().map(|(k, _)| k.as_str())));
-            command.envs(rest);
             command
                 .arg("-d")
                 .arg(distro)
@@ -206,14 +201,25 @@ pub fn create_shell_command(
     }
 }
 
-/// WSLENV naming `names` for wsl.exe to pass on unchanged (`/u`: Windows to
-/// WSL only), after whatever WSLENV already holds.
+/// WSLENV naming exactly `names` for wsl.exe to pass on unchanged (`/u`:
+/// Windows to WSL only). Builder's own WSLENV is not kept: a key it lists
+/// would otherwise reach the command.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-fn wslenv<'a>(existing: Option<String>, names: impl Iterator<Item = &'a str>) -> String {
-    existing.into_iter().filter(|e| !e.is_empty())
-        .chain(names.map(|name| format!("{name}/u")))
-        .collect::<Vec<_>>()
-        .join(":")
+fn wslenv<'a>(names: impl Iterator<Item = &'a str>) -> String {
+    names.map(|name| format!("{name}/u")).collect::<Vec<_>>().join(":")
+}
+
+/// A wsl.exe that passes `env` into the distro: PATH as `PATH=…` before the
+/// command (the distro's own), the rest through WSLENV so values stay off the
+/// process list.
+#[cfg(target_os = "windows")]
+fn wsl_exe(env: HashMap<String, String>) -> (Command, Option<String>) {
+    let (path, rest): (Vec<_>, Vec<_>) = env.into_iter().partition(|(k, _)| k == "PATH");
+    let mut command = command_with_limited_env("wsl.exe");
+    drop_unpassed_logins(&mut command, &rest.iter().cloned().collect());
+    command.env("WSLENV", wslenv(rest.iter().map(|(k, _)| k.as_str())));
+    command.envs(rest);
+    (command, path.into_iter().next().map(|(_, v)| v))
 }
 
 #[cfg(target_os = "windows")]
@@ -231,14 +237,10 @@ pub fn create_cmd_command(
     #[cfg(target_os = "windows")]
     {
         if let Some(distro) = wsl_distro {
-            let env_assignments = wsl_env_assignments(&env);
-            let mut command = command_with_limited_env("wsl.exe");
-            command.arg("-d").arg(distro).arg("--cd").arg(cwd);
-            if !env_assignments.is_empty() {
-                command.arg("env");
-                for assignment in &env_assignments {
-                    command.arg(assignment);
-                }
+            let (mut command, path) = wsl_exe(env);
+            command.arg("-d").arg(distro).arg("--cd").arg(cwd).arg("--exec");
+            if let Some(path) = path {
+                command.arg("env").arg(format!("PATH={path}"));
             }
             command.arg(cmd);
             command.args(args);
@@ -345,8 +347,7 @@ pub fn spawn_command(mut command: Command) -> std::io::Result<ChildProcess> {
 mod wslenv_tests {
     #[test]
     fn wslenv_lists_names_not_values() {
-        assert_eq!(super::wslenv(None, ["TEST_EMAIL", "TEST_PASSWORD"].into_iter()), "TEST_EMAIL/u:TEST_PASSWORD/u");
-        assert_eq!(super::wslenv(Some("USERPROFILE/p".into()), ["A"].into_iter()), "USERPROFILE/p:A/u");
-        assert_eq!(super::wslenv(Some(String::new()), std::iter::empty()), "");
+        assert_eq!(super::wslenv(["TEST_EMAIL", "TEST_PASSWORD"].into_iter()), "TEST_EMAIL/u:TEST_PASSWORD/u");
+        assert_eq!(super::wslenv(std::iter::empty()), "");
     }
 }
