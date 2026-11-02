@@ -46,6 +46,18 @@ impl Kind {
     }
 }
 
+/// A button in Builder's Status tab that runs one of the folder's make
+/// targets (with the same PORT): tests, a deploy. `confirm` makes the page ask
+/// first, and the server refuse a run the page did not confirm.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct Action {
+    pub id: String,
+    pub label: String,
+    pub make: String,
+    #[serde(default)]
+    pub confirm: bool,
+}
+
 /// The `[builder]` table of a bot folder's `builder.toml`.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct BotSpec {
@@ -77,6 +89,9 @@ pub struct BotSpec {
     /// Commands that must work before setup, e.g. `["docker"]`.
     #[serde(default)]
     pub requires: Vec<String>,
+    /// `[[builder.actions]]`: buttons for the folder's own targets.
+    #[serde(default)]
+    pub actions: Vec<Action>,
 }
 
 fn default_port() -> u16 { 8090 }
@@ -103,8 +118,9 @@ pub fn read_spec(dir: &Path) -> Result<BotSpec, String> {
     // A leading '-' would read as an option to make or `command -v`.
     let name = |t: &String, extra: &str| t.starts_with(|c: char| c.is_ascii_alphanumeric())
         && t.chars().all(|c| c.is_ascii_alphanumeric() || extra.contains(c));
-    if spec.stop.as_ref().is_some_and(|t| !name(t, "-_")) || !spec.requires.iter().all(|t| name(t, "-_.")) {
-        return Err(format!("{}: stop names a make target and requires names commands (letters, digits, - _ and . in commands)", path.display()));
+    if spec.stop.as_ref().is_some_and(|t| !name(t, "-_")) || !spec.requires.iter().all(|t| name(t, "-_."))
+        || !spec.actions.iter().all(|a| name(&a.id, "-_") && name(&a.make, "-_")) {
+        return Err(format!("{}: stop, actions' id and make name make targets, requires names commands (letters, digits, - _ and . in commands)", path.display()));
     }
     Ok(spec)
 }
@@ -161,6 +177,8 @@ pub struct Bot {
     stopped: AtomicBool,
     /// Set after the first start: only that one clears what a crashed run left.
     started: AtomicBool,
+    /// One action at a time.
+    acting: Mutex<()>,
 }
 
 impl std::fmt::Debug for Bot {
@@ -172,7 +190,8 @@ impl std::fmt::Debug for Bot {
 impl Bot {
     pub fn new(spec: BotSpec, dir: PathBuf, port: u16, distro: Option<String>, env: HashMap<String, String>) -> Self {
         Self { spec, dir, port, distro, env, process: Mutex::new(None), starting: Mutex::new(()),
-            stopped: AtomicBool::new(false), started: AtomicBool::new(false) }
+            stopped: AtomicBool::new(false), started: AtomicBool::new(false),
+            acting: Mutex::new(()) }
     }
 
     /// One log per port, so two Builders' bots do not share one.
@@ -332,6 +351,27 @@ impl Bot {
         self.run_stop().await;
     }
 
+    /// Run the action `id` (`make <target> PORT=<port>`), one at a time. Its
+    /// output, or the error, is also kept in the action log.
+    pub async fn run_action(&self, id: &str, confirmed: bool) -> Result<String, ActionError> {
+        let action = self.spec.actions.iter().find(|a| a.id == id).ok_or(ActionError::Unknown)?;
+        if action.confirm && !confirmed {
+            return Err(ActionError::NotConfirmed);
+        }
+        let _one = self.acting.try_lock().map_err(|_| ActionError::Busy)?;
+        let port = format!("PORT={}", self.port);
+        let result = run_on(self.distro.as_deref(), "make", &[&action.make, &port], &self.dir, &self.env,
+            Duration::from_secs(30 * 60)).await;
+        let text = match &result { Ok(out) => out.clone(), Err(e) => e.clone() };
+        let _ = std::fs::create_dir_all(state_dir())
+            .and_then(|_| std::fs::write(self.action_log_path(), format!("$ make {} {port}\n{text}\n", action.make)));
+        result.map_err(ActionError::Failed)
+    }
+
+    pub fn action_log_path(&self) -> PathBuf {
+        state_dir().join(format!("action-{}.log", self.port))
+    }
+
     /// The folder's stop target with the same PORT `make dev` got, if it has
     /// one; bounded, so quitting Builder never hangs on it, and a failure is
     /// only logged.
@@ -353,10 +393,20 @@ impl Bot {
 
 /// The page's bot routes, behind Builder's guard (secret, Host, Origin):
 /// status, restart, the log, and the audio WebSocket bridge.
+/// Why an action did not run.
+#[derive(Debug, PartialEq)]
+pub enum ActionError {
+    Unknown,
+    NotConfirmed,
+    Busy,
+    Failed(String),
+}
+
 pub fn routes(bot: Arc<Bot>) -> Router {
     Router::new()
         .route("/bot/status", get(status))
         .route("/bot/restart", post(restart))
+        .route("/bot/actions/{id}", post(action))
         .route("/bot/log", get(log))
         .route("/bot/socket", get(socket))
         .with_state(bot)
@@ -372,6 +422,25 @@ async fn restart(State(bot): State<Arc<Bot>>) -> Response {
     match bot.start(&|_| {}).await {
         Ok(health) => Json(json!({"up": health.up, "ready": health.ready})).into_response(),
         Err(error) => (StatusCode::BAD_GATEWAY, Json(json!({"error": error}))).into_response(),
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct ActionBody {
+    #[serde(default)]
+    confirmed: bool,
+}
+
+/// Runs one of the folder's actions; a `confirm` action needs `{"confirmed": true}`.
+async fn action(State(bot): State<Arc<Bot>>, axum::extract::Path(id): axum::extract::Path<String>,
+    body: Option<Json<ActionBody>>) -> Response {
+    let confirmed = body.map(|Json(b)| b.confirmed).unwrap_or_default();
+    match bot.run_action(&id, confirmed).await {
+        Ok(output) => Json(json!({"ok": true, "output": output})).into_response(),
+        Err(ActionError::Unknown) => (StatusCode::NOT_FOUND, Json(json!({"error": "No such action."}))).into_response(),
+        Err(ActionError::NotConfirmed) => (StatusCode::PRECONDITION_REQUIRED, Json(json!({"error": "This action must be confirmed."}))).into_response(),
+        Err(ActionError::Busy) => (StatusCode::CONFLICT, Json(json!({"error": "Another action is running."}))).into_response(),
+        Err(ActionError::Failed(error)) => (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "error": error}))).into_response(),
     }
 }
 
@@ -515,7 +584,7 @@ mod tests {
         std::fs::write(dir.path().join(".env"), "EARSHOT_BOT_TOKEN=t0ken\n").unwrap();
         let spec = BotSpec { kind: Kind::Bot, name: "t".into(), port: bot_port, health: "/healthz".into(),
             socket: "/earshot".into(), setup_done: None, start_timeout: 5, stop: None, mcp: None, page: None,
-            requires: vec![] };
+            requires: vec![], actions: vec![] };
         let bot = Arc::new(Bot::new(spec, dir.path().to_path_buf(), bot_port, None, HashMap::new()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -551,7 +620,8 @@ h.HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()\n").unwrap();
             "dev:\n\texec python3 server.py $(PORT)\nhalt:\n\ttouch stopped\n").unwrap();
         let spec = BotSpec { kind: Kind::Product, name: "t".into(), port, health: "/healthz".into(),
             socket: "/earshot".into(), setup_done: None, start_timeout: 20, stop: Some("halt".into()),
-            mcp: Some("/voipappz/mcp".into()), page: Some("/admin".into()), requires: vec!["python3".into()] };
+            mcp: Some("/voipappz/mcp".into()), page: Some("/admin".into()), requires: vec!["python3".into()],
+            actions: vec![] };
         let env: HashMap<String, String> = std::env::vars().collect();
         let bot = Bot::new(spec, dir.path().to_path_buf(), port, None, env);
         bot.check_requires().await.unwrap();
@@ -567,6 +637,26 @@ h.HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()\n").unwrap();
         // A restart that comes after Builder stopped does not start it again.
         assert!(bot.start(&|_| {}).await.unwrap_err().contains("stopping"));
         assert!(!bot.health().await.up);
+    }
+
+    /// Actions run the folder's own targets with the same PORT; a confirm
+    /// action needs confirming; one at a time; unknown ids are refused.
+    #[tokio::test]
+    async fn actions_run_the_folders_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Makefile"), "check:\n\t@echo checked $(PORT)\nship:\n\t@echo shipped\nfail:\n\t@exit 3\n").unwrap();
+        let action = |id: &str, confirm| Action { id: id.into(), label: id.into(), make: id.into(), confirm };
+        let spec = BotSpec { kind: Kind::Product, name: "t".into(), port: 4100, health: "/".into(), socket: "/earshot".into(),
+            setup_done: None, start_timeout: 5, stop: None, mcp: None, page: None, requires: vec![],
+            actions: vec![action("check", false), action("ship", true), action("fail", false)] };
+        let env: HashMap<String, String> = std::env::vars().collect();
+        let bot = Bot::new(spec, dir.path().to_path_buf(), 4100, None, env);
+        assert_eq!(bot.run_action("check", false).await.unwrap(), "checked 4100");
+        assert_eq!(bot.run_action("ship", false).await, Err(ActionError::NotConfirmed));
+        assert_eq!(bot.run_action("ship", true).await.unwrap(), "shipped");
+        assert!(matches!(bot.run_action("fail", false).await, Err(ActionError::Failed(_))));
+        assert_eq!(bot.run_action("rm", true).await, Err(ActionError::Unknown));
+        assert!(std::fs::read_to_string(bot.action_log_path()).unwrap().contains("make fail"));
     }
 
     /// A `make dev` that only starts something detached (`docker compose up
@@ -588,7 +678,7 @@ h.HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()\n").unwrap();
 down:\n\t-kill $$(cat pid.$(PORT)) && rm pid.$(PORT)\n").unwrap();
         let spec = BotSpec { kind: Kind::Product, name: "t".into(), port, health: "/".into(),
             socket: "/earshot".into(), setup_done: None, start_timeout: 20, stop: Some("down".into()),
-            mcp: None, page: None, requires: vec![] };
+            mcp: None, page: None, requires: vec![], actions: vec![] };
         let env: HashMap<String, String> = std::env::vars().collect();
         let bot = Bot::new(spec, dir.path().to_path_buf(), port, None, env);
         assert_eq!(bot.start(&|_| {}).await.unwrap(), Health { up: true, ready: true });

@@ -288,6 +288,9 @@ struct BotPage<'a> {
     kind: crate::bot::Kind,
     /// The page for the Product pane, when the folder names one.
     page_url: Option<String>,
+    /// Buttons for the folder's own targets; POST `{actions_path}/{id}`.
+    actions: &'a [crate::bot::Action],
+    actions_path: &'static str,
     status_path: &'static str,
     restart_path: &'static str,
     log_path: &'static str,
@@ -481,6 +484,8 @@ fn stub_page(config: &BuilderConfig) -> Response<Body> {
             name: &bot.spec.name,
             kind: bot.spec.kind,
             page_url: bot.page_url(),
+            actions: &bot.spec.actions,
+            actions_path: "/bot/actions",
             status_path: "/bot/status",
             restart_path: "/bot/restart",
             log_path: "/bot/log",

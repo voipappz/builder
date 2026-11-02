@@ -152,6 +152,7 @@ app; the Admin and User previews stay. Optional keys:
 | `mcp` | the folder's VoipAppz dev MCP path (e.g. `/voipappz/mcp`): given to the agent as `voipappz-product` or `voipappz-bot`, if it answers |
 | `page` | the page shown in the Product pane |
 | `requires` | commands that must work before setup, e.g. `["docker"]` |
+| `[[actions]]` | buttons in the Status tab: `id`, `label`, `make` (a target, run with the same `PORT`), `confirm` (the page asks first, and the server refuses an unconfirmed run). One at a time; the output is kept in `action-<port>.log`. Tests, CI and deploys run this way, through the folder's own targets |
 
 The agent also gets the app's dev MCP (`voipappz-app`, `/voipappz/mcp` on the
 app's dev server) when Builder started that dev server, and a local API's
