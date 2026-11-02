@@ -133,20 +133,31 @@ the previews. When the API answers, it gives the agent its `/api/mcp` tools
 read-only. The agent edits files without asking (its "Accept edits" mode) and
 asks before running commands.
 
-### With a voice bot
+### With the product (Connectix) or a voice bot
 
 ```text
 cargo run -p builder-cli -- --app-repo ../app --start-app \
-  --bot-dir ../pipecrab/examples/earshot-hebrew --open
+  --bot-dir ../connectix --open
 ```
 
-A bot folder has a `builder.toml` with `kind = "bot"` and the same Makefile
-contract (`make setup`, `make dev PORT=<port>`, `make test`, `make check`).
-Builder runs it beside the app, waits for its health address, and the agent
-changes the bot instead of the app; the Admin and User previews stay. The
-page gets the bot's status, a restart (a Rust bot does not reload itself),
-its log, and an audio WebSocket bridge that adds the bot's token from its
-`.env`, so the page never holds it. The bot gets no API login.
+The folder has a `builder.toml` with `kind = "product"` (Connectix, the bot
+brain) or `kind = "bot"`, and the Makefile contract (`make setup`,
+`make dev PORT=<port>`, `make test`, `make check`). Builder runs it beside the
+app, waits for its health address, and the agent changes it instead of the
+app; the Admin and User previews stay. Optional keys:
+
+| Key | What Builder does with it |
+|---|---|
+| `stop` | a make target (run with the same `PORT`) that stops what `make dev` left running detached, such as a container: on quit, when a start fails, and once before the first start. A `make dev` that returns at once is then waited for, not treated as stopped |
+| `mcp` | the folder's VoipAppz dev MCP path (e.g. `/voipappz/mcp`): given to the agent as `voipappz-product` or `voipappz-bot`, if it answers |
+| `page` | the page shown in the Product pane |
+| `requires` | commands that must work before setup, e.g. `["docker"]` |
+
+The agent also gets the app's dev MCP (`voipappz-app`, `/voipappz/mcp` on the
+app's dev server) when Builder started that dev server and it answers. The page
+gets the folder's status, a restart, its log, and an audio WebSocket bridge
+that adds the bot's token from its `.env`, so the page never holds it. The
+folder gets no API login.
 
 In the desktop app, choose the folder under **3. Your voice bot** in
 onboarding (tray: **Connect App, API and Bot…**); it is saved as `bot_dir`

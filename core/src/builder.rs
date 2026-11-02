@@ -285,6 +285,9 @@ struct Previews {
 #[serde(rename_all = "camelCase")]
 struct BotPage<'a> {
     name: &'a str,
+    kind: crate::bot::Kind,
+    /// The page for the Product pane, when the folder names one.
+    page_url: Option<String>,
     status_path: &'static str,
     restart_path: &'static str,
     log_path: &'static str,
@@ -476,6 +479,8 @@ fn stub_page(config: &BuilderConfig) -> Response<Body> {
         },
         bot: config.bot.as_ref().map(|bot| BotPage {
             name: &bot.spec.name,
+            kind: bot.spec.kind,
+            page_url: bot.page_url(),
             status_path: "/bot/status",
             restart_path: "/bot/restart",
             log_path: "/bot/log",
@@ -573,6 +578,9 @@ fn stub_page(config: &BuilderConfig) -> Response<Body> {
     let client_ws = client
         .replacen("http://", "ws://", 1)
         .replacen("https://", "wss://", 1);
+    // The Product pane frames the product's own page (Connectix), when it names one.
+    let product = config.bot.as_ref().filter(|bot| bot.page_url().is_some())
+        .map(|bot| format!(" {}", bot.origin())).unwrap_or_default();
     let csp = format!(
         "default-src 'none'; \
          script-src 'nonce-{nonce}' {client}; \
@@ -580,7 +588,7 @@ fn stub_page(config: &BuilderConfig) -> Response<Body> {
          img-src 'self' data: {client}; \
          font-src data: {client}; \
          connect-src 'self' {ws_self} {client} {client_ws}; \
-         frame-src {admin} {user}; \
+         frame-src {admin} {user}{product}; \
          base-uri 'none'; form-action 'none'"
     );
 

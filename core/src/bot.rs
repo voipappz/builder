@@ -1,5 +1,6 @@
-//! A voice bot beside the app: a folder whose `builder.toml` says
-//! `kind = "bot"`. Builder runs the bot's own `make setup` and `make dev`,
+//! A voice bot or product beside the app: a folder whose `builder.toml`
+//! says `kind = "bot"` or `kind = "product"` (Connectix, the bot brain, is
+//! one). Builder runs the folder's own `make setup` and `make dev`,
 //! waits for its health address, restarts it after the agent changes it, and
 //! bridges the page to its audio WebSocket with the bot's token, which the
 //! page never sees.
@@ -16,7 +17,7 @@ use axum::{
 };
 use bot_ws::tungstenite::{client::IntoClientRequest, Message as UpMessage};
 use futures::{SinkExt, StreamExt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -30,10 +31,25 @@ use tracing::warn;
 use crate::command::{create_shell_command, spawn_command, ChildProcess};
 use crate::launcher::{command_path, run_on, sh_quote, state_dir, wsl_env};
 
+/// What a folder is: a voice bot, or a product (Connectix, the bot brain).
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    Bot,
+    Product,
+}
+
+impl Kind {
+    /// The word for it in messages: "bot" or "product".
+    pub fn noun(self) -> &'static str {
+        match self { Kind::Bot => "bot", Kind::Product => "product" }
+    }
+}
+
 /// The `[builder]` table of a bot folder's `builder.toml`.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct BotSpec {
-    pub kind: String,
+    pub kind: Kind,
     pub name: String,
     #[serde(default = "default_port")]
     pub port: u16,
@@ -47,6 +63,20 @@ pub struct BotSpec {
     /// Seconds `make dev` may take to answer; the first run compiles.
     #[serde(default = "default_start_timeout")]
     pub start_timeout: u64,
+    /// A make target that stops what `make dev` leaves running (a detached
+    /// container, say), run after the process is killed.
+    #[serde(default)]
+    pub stop: Option<String>,
+    /// Path of the folder's VoipAppz dev MCP (e.g. `/voipappz/mcp`); the agent
+    /// gets it beside the API's.
+    #[serde(default)]
+    pub mcp: Option<String>,
+    /// Path of the page shown in Builder's Product pane.
+    #[serde(default)]
+    pub page: Option<String>,
+    /// Commands that must work before setup, e.g. `["docker"]`.
+    #[serde(default)]
+    pub requires: Vec<String>,
 }
 
 fn default_port() -> u16 { 8090 }
@@ -63,13 +93,18 @@ struct BuilderToml {
 pub fn read_spec(dir: &Path) -> Result<BotSpec, String> {
     let path = dir.join("builder.toml");
     let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("{}: {e}. A bot folder has a builder.toml with kind = \"bot\".", path.display()))?;
-    let spec = toml::from_str::<BuilderToml>(&text).map_err(|e| format!("{}: {e}", path.display()))?.builder;
-    if spec.kind != "bot" {
-        return Err(format!("{} says kind = \"{}\"; a bot folder says kind = \"bot\".", path.display(), spec.kind));
+        .map_err(|e| format!("{}: {e}. A bot folder has a builder.toml with kind = \"bot\" or \"product\".", path.display()))?;
+    let spec = toml::from_str::<BuilderToml>(&text)
+        .map_err(|e| format!("{}: {e}. A bot folder says kind = \"bot\" or \"product\".", path.display()))?.builder;
+    let paths = [Some(&spec.health), Some(&spec.socket), spec.mcp.as_ref(), spec.page.as_ref()];
+    if paths.into_iter().flatten().any(|p| !p.starts_with('/')) {
+        return Err(format!("{}: health, socket, mcp and page are paths starting with /", path.display()));
     }
-    if !spec.health.starts_with('/') || !spec.socket.starts_with('/') {
-        return Err(format!("{}: health and socket are paths starting with /", path.display()));
+    // A leading '-' would read as an option to make or `command -v`.
+    let name = |t: &String, extra: &str| t.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && t.chars().all(|c| c.is_ascii_alphanumeric() || extra.contains(c));
+    if spec.stop.as_ref().is_some_and(|t| !name(t, "-_")) || !spec.requires.iter().all(|t| name(t, "-_.")) {
+        return Err(format!("{}: stop names a make target and requires names commands (letters, digits, - _ and . in commands)", path.display()));
     }
     Ok(spec)
 }
@@ -124,6 +159,8 @@ pub struct Bot {
     starting: Mutex<()>,
     /// Set when Builder stops: a restart still waiting does not start it again.
     stopped: AtomicBool,
+    /// Set after the first start: only that one clears what a crashed run left.
+    started: AtomicBool,
 }
 
 impl std::fmt::Debug for Bot {
@@ -135,7 +172,7 @@ impl std::fmt::Debug for Bot {
 impl Bot {
     pub fn new(spec: BotSpec, dir: PathBuf, port: u16, distro: Option<String>, env: HashMap<String, String>) -> Self {
         Self { spec, dir, port, distro, env, process: Mutex::new(None), starting: Mutex::new(()),
-            stopped: AtomicBool::new(false) }
+            stopped: AtomicBool::new(false), started: AtomicBool::new(false) }
     }
 
     /// One log per port, so two Builders' bots do not share one.
@@ -143,8 +180,39 @@ impl Bot {
         state_dir().join(format!("bot-{}.log", self.port))
     }
 
+    /// Where it answers: `http://127.0.0.1:<port>`.
+    pub fn origin(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
     fn url(&self, path: &str) -> String {
-        format!("http://127.0.0.1:{}{}", self.port, path)
+        format!("{}{path}", self.origin())
+    }
+
+    /// The folder's dev MCP server, when its builder.toml names one.
+    pub fn mcp_url(&self) -> Option<String> {
+        self.spec.mcp.as_deref().map(|path| self.url(path))
+    }
+
+    /// The page for Builder's Product pane, when its builder.toml names one.
+    pub fn page_url(&self) -> Option<String> {
+        self.spec.page.as_deref().map(|path| self.url(path))
+    }
+
+    /// The commands its builder.toml requires, found in the folder's system.
+    pub async fn check_requires(&self) -> Result<(), String> {
+        let native_windows = self.distro.is_none() && cfg!(windows);
+        for tool in &self.spec.requires {
+            let check = if tool == "docker" { "docker info --format '{{.ServerVersion}}'".to_string() }
+                else { format!("command -v {}", sh_quote(tool)) };
+            let result = match (native_windows, tool.as_str()) {
+                (true, "docker") => run_on(None, "docker", &["info", "--format", "{{.ServerVersion}}"], &self.dir, &self.env, Duration::from_secs(30)).await,
+                (true, _) => run_on(None, "where", &[tool], &self.dir, &self.env, Duration::from_secs(30)).await,
+                (false, _) => run_on(self.distro.as_deref(), "sh", &["-c", &check], &self.dir, &self.env, Duration::from_secs(30)).await,
+            };
+            result.map_err(|e| format!("{} needs {tool}, which did not answer: {e}", self.spec.name))?;
+        }
+        Ok(())
     }
 
     /// The bot's audio WebSocket, for the bridge.
@@ -165,7 +233,7 @@ impl Bot {
         }
         run_on(self.distro.as_deref(), "make", &["setup"], &self.dir, &self.env, Duration::from_secs(20 * 60))
             .await
-            .map_err(|e| format!("The bot's make setup failed: {e}"))?;
+            .map_err(|e| format!("The {}'s make setup failed: {e}", self.spec.kind.noun()))?;
         Ok(true)
     }
 
@@ -188,6 +256,12 @@ impl Bot {
             return Err("Builder is stopping.".into());
         }
         self.process.lock().await.take();
+        // The first start clears what a crashed run on this port left behind (a
+        // detached container); restarts after an edit keep it, `make dev`
+        // brings it up to date.
+        if !self.started.swap(true, Ordering::SeqCst) {
+            self.run_stop().await;
+        }
         std::fs::create_dir_all(state_dir()).map_err(|e| e.to_string())?;
         let log = std::fs::File::create(self.log_path()).map_err(|e| e.to_string())?;
         let log_err = log.try_clone().map_err(|e| e.to_string())?;
@@ -204,7 +278,7 @@ impl Bot {
             }
         };
         command.stdin(Stdio::null()).stdout(Stdio::from(log)).stderr(Stdio::from(log_err));
-        let child = spawn_command(command).map_err(|e| format!("could not start the bot's make dev: {e}"))?;
+        let child = spawn_command(command).map_err(|e| format!("could not start the {}'s make dev: {e}", self.spec.kind.noun()))?;
         *self.process.lock().await = Some(child);
         // stop() may have run between the check above and now.
         if self.stopped.load(Ordering::SeqCst) {
@@ -222,19 +296,24 @@ impl Bot {
             if health.up {
                 return Ok(health);
             }
-            if let Some(child) = self.process.lock().await.as_mut() {
-                if let Some(status) = child.child.try_wait().map_err(|e| e.to_string())? {
-                    return Err(format!("The bot's make dev stopped ({status}):\n{}\n\nSee {}",
-                        self.log_tail(12), self.log_path().display()));
+            let mut process = self.process.lock().await;
+            if let Some(status) = match process.as_mut() { Some(child) => child.child.try_wait().map_err(|e| e.to_string())?, None => None } {
+                // A `make dev` that only starts a detached container returns at
+                // once; its folder names a stop target, and the wait goes on.
+                if !(status.success() && self.spec.stop.is_some()) {
+                    return Err(format!("The {}'s make dev stopped ({status}):\n{}\n\nSee {}",
+                        self.spec.kind.noun(), self.log_tail(12), self.log_path().display()));
                 }
+                process.take();
             }
+            drop(process);
             if tokio::time::Instant::now() > deadline {
-                return Err(format!("The bot did not answer at {} within {}s; see {}",
+                return Err(format!("The {} did not answer at {} within {}s; see {}", self.spec.kind.noun(),
                     self.url(&self.spec.health), self.spec.start_timeout, self.log_path().display()));
             }
             if tokio::time::Instant::now() >= next_update {
-                progress(&format!("Waiting for the bot at {} (the first start compiles it). Details: {}",
-                    self.url(&self.spec.health), self.log_path().display()));
+                progress(&format!("Waiting for the {} at {} (the first start builds it). Details: {}",
+                    self.spec.kind.noun(), self.url(&self.spec.health), self.log_path().display()));
                 next_update = tokio::time::Instant::now() + Duration::from_secs(10);
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -245,6 +324,23 @@ impl Bot {
     pub async fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
         self.process.lock().await.take();
+        // A start in flight sees `stopped` within half a second and returns;
+        // waiting for it means its `make dev` is not spawned after the stop
+        // target ran.
+        let _one = self.starting.lock().await;
+        self.process.lock().await.take();
+        self.run_stop().await;
+    }
+
+    /// The folder's stop target with the same PORT `make dev` got, if it has
+    /// one; bounded, so quitting Builder never hangs on it, and a failure is
+    /// only logged.
+    async fn run_stop(&self) {
+        let Some(target) = &self.spec.stop else { return };
+        let port = format!("PORT={}", self.port);
+        if let Err(e) = run_on(self.distro.as_deref(), "make", &[target, &port], &self.dir, &self.env, Duration::from_secs(30)).await {
+            warn!("{}: make {target} failed: {e}", self.spec.name);
+        }
     }
 
     /// The last `n` lines of the bot's log.
@@ -357,12 +453,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert!(read_spec(dir.path()).is_err());
         std::fs::write(dir.path().join("builder.toml"), "[builder]\nkind = \"app\"\nname = \"x\"\n").unwrap();
-        assert!(read_spec(dir.path()).unwrap_err().contains("kind = \"bot\""));
+        assert!(read_spec(dir.path()).unwrap_err().contains("kind = \"bot\" or \"product\""));
         std::fs::write(dir.path().join("builder.toml"),
             "[builder]\nkind = \"bot\"\nname = \"Noa\"\nport = 8091\nsetup_done = \".env\"\n").unwrap();
         let spec = read_spec(dir.path()).unwrap();
         assert_eq!((spec.name.as_str(), spec.port, spec.health.as_str(), spec.socket.as_str()), ("Noa", 8091, "/healthz", "/earshot"));
         assert_eq!(read_token(dir.path()), None);
+        std::fs::write(dir.path().join("builder.toml"),
+            "[builder]\nkind = \"product\"\nname = \"Connectix\"\nmcp = \"/voipappz/mcp\"\nstop = \"down\"\nrequires = [\"docker\"]\n").unwrap();
+        let product = read_spec(dir.path()).unwrap();
+        assert_eq!((product.kind, product.stop.as_deref()), (Kind::Product, Some("down")));
+        std::fs::write(dir.path().join("builder.toml"), "[builder]\nkind = \"product\"\nname = \"x\"\nstop = \"down; rm -rf /\"\n").unwrap();
+        assert!(read_spec(dir.path()).is_err());
+        std::fs::write(dir.path().join("builder.toml"), "[builder]\nkind = \"product\"\nname = \"x\"\nstop = \"-n\"\n").unwrap();
+        assert!(read_spec(dir.path()).is_err(), "a leading - reads as an option to make");
+        std::fs::write(dir.path().join("builder.toml"), "[builder]\nkind = \"product\"\nname = \"x\"\nrequires = [\"python3.12\"]\n").unwrap();
+        assert!(read_spec(dir.path()).is_ok());
+        std::fs::write(dir.path().join("builder.toml"), "[builder]\nkind = \"product\"\nname = \"x\"\nmcp = \"voipappz\"\n").unwrap();
+        assert!(read_spec(dir.path()).is_err());
+        std::fs::write(dir.path().join("builder.toml"),
+            "[builder]\nkind = \"bot\"\nname = \"Noa\"\nport = 8091\nsetup_done = \".env\"\n").unwrap();
         std::fs::write(dir.path().join(".env"), "OPENAI_API_KEY=k\nEARSHOT_BOT_TOKEN=\"abc\"\n").unwrap();
         assert_eq!(read_token(dir.path()).as_deref(), Some("abc"));
         // As sh sources it: export, comments, the last assignment wins.
@@ -403,8 +513,9 @@ mod tests {
         let bot_port = echo_bot("t0ken").await;
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".env"), "EARSHOT_BOT_TOKEN=t0ken\n").unwrap();
-        let spec = BotSpec { kind: "bot".into(), name: "t".into(), port: bot_port, health: "/healthz".into(),
-            socket: "/earshot".into(), setup_done: None, start_timeout: 5 };
+        let spec = BotSpec { kind: Kind::Bot, name: "t".into(), port: bot_port, health: "/healthz".into(),
+            socket: "/earshot".into(), setup_done: None, start_timeout: 5, stop: None, mcp: None, page: None,
+            requires: vec![] };
         let bot = Arc::new(Bot::new(spec, dir.path().to_path_buf(), bot_port, None, HashMap::new()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -435,18 +546,55 @@ mod tests {
         std::fs::write(dir.path().join("server.py"), "import http.server as h, sys\n\
 class H(h.BaseHTTPRequestHandler):\n    def do_GET(s): s.send_response(503); s.end_headers()\n\
 h.HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()\n").unwrap();
-        std::fs::write(dir.path().join("Makefile"), "dev:\n\texec python3 server.py $(PORT)\n").unwrap();
-        let spec = BotSpec { kind: "bot".into(), name: "t".into(), port, health: "/healthz".into(),
-            socket: "/earshot".into(), setup_done: None, start_timeout: 20 };
+        // `stop` stands for what a detached container would need: it leaves a mark.
+        std::fs::write(dir.path().join("Makefile"),
+            "dev:\n\texec python3 server.py $(PORT)\nhalt:\n\ttouch stopped\n").unwrap();
+        let spec = BotSpec { kind: Kind::Product, name: "t".into(), port, health: "/healthz".into(),
+            socket: "/earshot".into(), setup_done: None, start_timeout: 20, stop: Some("halt".into()),
+            mcp: Some("/voipappz/mcp".into()), page: Some("/admin".into()), requires: vec!["python3".into()] };
         let env: HashMap<String, String> = std::env::vars().collect();
         let bot = Bot::new(spec, dir.path().to_path_buf(), port, None, env);
+        bot.check_requires().await.unwrap();
+        assert_eq!(bot.mcp_url(), Some(format!("http://127.0.0.1:{port}/voipappz/mcp")));
+        assert_eq!(bot.page_url(), Some(format!("http://127.0.0.1:{port}/admin")));
         let health = bot.start(&|_| {}).await.unwrap();
         assert_eq!(health, Health { up: true, ready: false });
+        std::fs::remove_file(dir.path().join("stopped")).unwrap();
         bot.stop().await;
+        assert!(dir.path().join("stopped").exists(), "stop runs the folder's stop target");
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(!bot.health().await.up);
         // A restart that comes after Builder stopped does not start it again.
         assert!(bot.start(&|_| {}).await.unwrap_err().contains("stopping"));
         assert!(!bot.health().await.up);
+    }
+
+    /// A `make dev` that only starts something detached (`docker compose up
+    /// -d`) and returns: with a stop target, Builder keeps waiting for health,
+    /// and stop brings it down with the same PORT.
+    #[tokio::test]
+    async fn a_detached_make_dev_is_waited_for_and_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        std::fs::write(dir.path().join("server.py"), "import http.server as h, sys, time\n\
+time.sleep(1)\n\
+class H(h.BaseHTTPRequestHandler):\n    def do_GET(s): s.send_response(200); s.end_headers()\n\
+h.HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()\n").unwrap();
+        std::fs::write(dir.path().join("Makefile"),
+            "dev:\n\tsetsid python3 server.py $(PORT) >/dev/null 2>&1 & echo $$! > pid.$(PORT)\n\
+down:\n\t-kill $$(cat pid.$(PORT)) && rm pid.$(PORT)\n").unwrap();
+        let spec = BotSpec { kind: Kind::Product, name: "t".into(), port, health: "/".into(),
+            socket: "/earshot".into(), setup_done: None, start_timeout: 20, stop: Some("down".into()),
+            mcp: None, page: None, requires: vec![] };
+        let env: HashMap<String, String> = std::env::vars().collect();
+        let bot = Bot::new(spec, dir.path().to_path_buf(), port, None, env);
+        assert_eq!(bot.start(&|_| {}).await.unwrap(), Health { up: true, ready: true });
+        bot.stop().await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!bot.health().await.up, "stop ran `make down PORT=<port>`");
+        assert!(!dir.path().join(format!("pid.{port}")).exists());
     }
 }

@@ -11,6 +11,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tracing::{info, warn};
 
+use crate::bot::Kind;
 use crate::builder::{self, ApiMcp, BuilderConfig};
 use crate::command::{create_shell_command, spawn_command, ChildProcess};
 
@@ -93,6 +94,37 @@ pub(crate) fn command_path(path: &Path, distro: Option<&str>) -> String {
     match (distro, crate::wsl::location(&path.to_string_lossy())) {
         (Some(_), Some((_, linux))) => linux,
         _ => path.to_string_lossy().into_owned(),
+    }
+}
+
+/// The VoipAppz dev MCP on the app's local dev server (voipappz/app's
+/// vite.config): it answers loopback only, so 127.0.0.1, and without the
+/// browser tools, which need a toolbar. None for a deployed client.
+fn app_mcp_url(client_url: &str) -> Option<String> {
+    let url = reqwest::Url::parse(client_url).ok()?;
+    let local = url.scheme() == "http" && matches!(url.host_str(), Some("localhost" | "127.0.0.1"));
+    let port = url.port_or_known_default()?;
+    local.then(|| format!("http://127.0.0.1:{port}/voipappz/mcp?include_browser_tools=false"))
+}
+
+/// Whether an MCP server answers an `initialize` (streamable HTTP).
+async fn mcp_answers(url: &str) -> bool {
+    let Ok(client) = reqwest::Client::builder().timeout(Duration::from_secs(5)).build() else { return false };
+    let initialize = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "voipappz-builder", "version": env!("CARGO_PKG_VERSION")}}});
+    client.post(url).header("accept", "application/json, text/event-stream").json(&initialize).send().await
+        .is_ok_and(|r| r.status().is_success())
+}
+
+/// Stops the bot or product when dropped while armed: a start that fails
+/// after it came up leaves nothing running.
+struct StopOnError(Option<std::sync::Arc<crate::bot::Bot>>);
+
+impl Drop for StopOnError {
+    fn drop(&mut self) {
+        if let Some(bot) = self.0.take() {
+            tokio::spawn(async move { bot.stop().await });
+        }
     }
 }
 
@@ -561,24 +593,34 @@ impl Running {
 async fn start_bot(dir: &Path, env: &HashMap<String, String>, distro: Option<String>, progress: &impl Fn(&str))
     -> Result<std::sync::Arc<crate::bot::Bot>, String> {
     let spec = crate::bot::read_spec(dir)?;
+    let noun = spec.kind.noun();
     let port = free_port(spec.port).await
-        .ok_or_else(|| format!("No free port between {} and {} for the bot.", spec.port, spec.port + 19))?;
+        .ok_or_else(|| format!("No free port between {} and {} for the {noun}.", spec.port, spec.port + 19))?;
     let env: HashMap<String, String> = env.iter()
         .filter(|(k, _)| !matches!(k.as_str(), "TEST_EMAIL" | "TEST_PASSWORD" | "VA_TEST_OTP" | "VA_MCP_BASIC")
             && !k.starts_with("ANTHROPIC_") && !k.starts_with("CLAUDE_"))
         .map(|(k, v)| (k.clone(), v.clone())).collect();
     let bot = crate::bot::Bot::new(spec, dir.to_path_buf(), port, distro, env);
-    progress(&format!("Voice bot: {} in {}", bot.spec.name, dir.display()));
+    progress(&format!("{}: {} in {}", if bot.spec.kind == Kind::Product { "Product" } else { "Voice bot" },
+        bot.spec.name, dir.display()));
+    bot.check_requires().await?;
     let setup = bot.setup_if_needed();
-    if report_progress("Running the bot's setup (make setup)", progress, setup).await? {
-        progress("The bot is set up.");
+    if report_progress(&format!("Running the {noun}'s setup (make setup)"), progress, setup).await? {
+        progress(&format!("The {noun} is set up."));
     }
-    progress(&format!("Starting the bot (make dev PORT={port})…"));
-    let health = bot.start(progress).await?;
-    progress(&if health.ready {
-        format!("The bot answers on port {port}.")
-    } else {
-        format!("The bot runs on port {port} but is not ready for calls: put OPENAI_API_KEY in {}.", dir.join(".env").display())
+    progress(&format!("Starting the {noun} (make dev PORT={port})…"));
+    let health = match bot.start(progress).await {
+        Ok(health) => health,
+        Err(e) => {
+            // `make dev` may have left something detached running.
+            bot.stop().await;
+            return Err(e);
+        }
+    };
+    progress(&match (health.ready, bot.spec.kind) {
+        (true, _) => format!("The {noun} answers on port {port}."),
+        (false, Kind::Bot) => format!("The bot runs on port {port} but is not ready for calls: put OPENAI_API_KEY in {}.", dir.join(".env").display()),
+        (false, Kind::Product) => format!("The product runs on port {port} but its health check says it is not ready; see its log."),
     });
     Ok(std::sync::Arc::new(bot))
 }
@@ -941,6 +983,9 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
             Some(start_bot(dir, &env, bot_distro, &progress).await?)
         }
     };
+    // Any later failure stops the bot or product, so nothing it started
+    // detached outlives this start.
+    let mut bot_guard = StopOnError(bot.clone());
 
     let mut api_mcp = None;
     progress("@step api");
@@ -983,6 +1028,19 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
     if settings.bot_dir.is_some() {
         agent = agent_from(&command_path(&workspace, distro.as_deref()), &agent, distro.is_none() && cfg!(windows));
     }
+    // The app's only when Builder started its dev server: an app that already
+    // answered may be another project's.
+    let mut dev_mcps = Vec::new();
+    for (name, url) in [
+        dev_server.as_ref().and_then(|_| app_mcp_url(&client_url)).map(|url| ("voipappz-app".to_string(), url)),
+        bot.as_ref().and_then(|bot| bot.mcp_url().map(|url| (format!("voipappz-{}", bot.spec.kind.noun()), url))),
+    ].into_iter().flatten() {
+        if mcp_answers(&url).await {
+            dev_mcps.push(serde_json::json!({"type": "http", "name": name, "url": url, "headers": []}));
+        } else {
+            progress(&format!("The dev MCP at {url} does not answer; the agent works without {name}."));
+        }
+    }
     let config = BuilderConfig {
         port,
         secret: BuilderConfig::new_secret(),
@@ -992,7 +1050,9 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
         agent_command: agent,
         agent_env,
         wsl_distro: distro,
-        mcp_servers: Vec::new(),
+        // Each local project's VoipAppz dev MCP, beside the API's: the app's
+        // dev server and the bot or product folder.
+        mcp_servers: dev_mcps,
         api_mcp,
         api_url,
         preview_url,
@@ -1015,6 +1075,7 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
     });
     info!("Builder started; {}", api_note);
 
+    bot_guard.0 = None;
     Ok(Running {
         url,
         workspace,
@@ -1029,6 +1090,19 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_agent_gets_the_app_dev_servers_mcp() {
+        assert_eq!(app_mcp_url("http://localhost:3100/").as_deref(),
+            Some("http://127.0.0.1:3100/voipappz/mcp?include_browser_tools=false"));
+        assert_eq!(app_mcp_url("https://switch.voipappz.io"), None);
+        assert_eq!(app_mcp_url("http://evil.example:3000"), None);
+        // A path or no port is parsed as a URL, not split by hand.
+        assert_eq!(app_mcp_url("http://localhost:3100/app").as_deref(),
+            Some("http://127.0.0.1:3100/voipappz/mcp?include_browser_tools=false"));
+        assert_eq!(app_mcp_url("http://localhost/").as_deref(),
+            Some("http://127.0.0.1:80/voipappz/mcp?include_browser_tools=false"));
+    }
 
     #[test]
     fn the_agent_starts_from_the_app_folder() {
