@@ -154,7 +154,9 @@ app; the Admin and User previews stay. Optional keys:
 | `requires` | commands that must work before setup, e.g. `["docker"]` |
 
 The agent also gets the app's dev MCP (`voipappz-app`, `/voipappz/mcp` on the
-app's dev server) when Builder started that dev server and it answers. The page
+app's dev server) when Builder started that dev server, and a local API's
+(`voipappz-api-dev`, `/voipappz/mcp` beside `/api/mcp`) when `api_dir` is set;
+each only if it answers. The page
 gets the folder's status, a restart, its log, and an audio WebSocket bridge
 that adds the bot's token from its `.env`, so the page never holds it. The
 folder gets no API login.

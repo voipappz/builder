@@ -107,6 +107,15 @@ fn app_mcp_url(client_url: &str) -> Option<String> {
     local.then(|| format!("http://127.0.0.1:{port}/voipappz/mcp?include_browser_tools=false"))
 }
 
+/// The local API's VoipAppz dev MCP (voipappz-api docs/MCP.md): development
+/// only, loopback only, so only for an API on this machine.
+fn api_dev_mcp_url(api_url: &str) -> Option<String> {
+    let url = reqwest::Url::parse(api_url).ok()?;
+    let local = url.scheme() == "http" && matches!(url.host_str(), Some("localhost" | "127.0.0.1"));
+    let port = url.port_or_known_default()?;
+    local.then(|| format!("http://127.0.0.1:{port}/voipappz/mcp"))
+}
+
 /// Whether an MCP server answers an `initialize` (streamable HTTP).
 async fn mcp_answers(url: &str) -> bool {
     let Ok(client) = reqwest::Client::builder().timeout(Duration::from_secs(5)).build() else { return false };
@@ -1034,6 +1043,8 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
     for (name, url) in [
         dev_server.as_ref().and_then(|_| app_mcp_url(&client_url)).map(|url| ("voipappz-app".to_string(), url)),
         bot.as_ref().and_then(|bot| bot.mcp_url().map(|url| (format!("voipappz-{}", bot.spec.kind.noun()), url))),
+        // A local API (api_dir) serves its dev MCP beside /api/mcp.
+        settings.api_dir.as_ref().and(api_url.as_deref()).and_then(api_dev_mcp_url).map(|url| ("voipappz-api-dev".to_string(), url)),
     ].into_iter().flatten() {
         if mcp_answers(&url).await {
             dev_mcps.push(serde_json::json!({"type": "http", "name": name, "url": url, "headers": []}));
@@ -1102,6 +1113,12 @@ mod tests {
             Some("http://127.0.0.1:3100/voipappz/mcp?include_browser_tools=false"));
         assert_eq!(app_mcp_url("http://localhost/").as_deref(),
             Some("http://127.0.0.1:80/voipappz/mcp?include_browser_tools=false"));
+    }
+
+    #[test]
+    fn the_agent_gets_a_local_apis_dev_mcp_only() {
+        assert_eq!(api_dev_mcp_url("http://127.0.0.1:5055").as_deref(), Some("http://127.0.0.1:5055/voipappz/mcp"));
+        assert_eq!(api_dev_mcp_url("https://switch.voipappz.io"), None);
     }
 
     #[test]
