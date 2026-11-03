@@ -2,17 +2,9 @@ pub mod command;
 pub use command::cleanup_appimage_env;
 pub mod bot;
 pub mod builder;
-pub mod config;
 pub mod launcher;
-mod http_handlers;
 pub mod phoenix;
-pub mod server;
 pub mod shell_env;
-pub mod utils;
 pub mod ws;
 
-pub use config::{get_config_path, load_config, Config};
-pub use server::{
-    serve_http_server_with_listener, serve_http_server_with_shutdown, start_http_server,
-};
 pub mod wsl;

@@ -2,7 +2,7 @@
 //!
 //! # Channel abstraction
 //!
-//! Each Phoenix topic (e.g. `watch:<ref>`) is handled by a **channel** — an async
+//! Each Phoenix topic (e.g. `acp:<id>`) is handled by a **channel** — an async
 //! function spawned in its own task when the client sends `phx_join`. A channel
 //! receives four arguments:
 //!
@@ -231,29 +231,7 @@ fn dispatch_join(
     outgoing_tx: UnboundedSender<PhxMessage>,
     incoming_rx: mpsc::UnboundedReceiver<PhxMessage>,
 ) -> Option<tokio::task::JoinHandle<()>> {
-    if (msg.topic.starts_with("watch:") && !state.watch_enabled)
-        || (msg.topic.starts_with("terminal:") && !state.terminal_enabled)
-    {
-        let _ = outgoing_tx.send(PhxMessage::error_reply(&msg, "topic disabled"));
-        None
-    } else if msg.topic.starts_with("watch:") {
-        let watch_state = state.watch.clone();
-        Some(tokio::spawn(async move {
-            reply_init(
-                super::watch::init(&watch_state, &msg, outgoing_tx.clone(), incoming_rx).await,
-                msg,
-                &outgoing_tx,
-            );
-        }))
-    } else if msg.topic.starts_with("terminal:") {
-        Some(tokio::spawn(async move {
-            reply_init(
-                super::terminal::init(&msg, outgoing_tx.clone(), incoming_rx).await,
-                msg,
-                &outgoing_tx,
-            );
-        }))
-    } else if msg.topic.starts_with("acp:") {
+    if msg.topic.starts_with("acp:") {
         let acp_state = state.acp.clone();
         Some(tokio::spawn(async move {
             reply_init(

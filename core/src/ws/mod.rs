@@ -2,7 +2,6 @@
 //!
 //! This module provides a unified WebSocket endpoint (`/socket/websocket`) that supports
 //! multiple features over a single connection:
-//! - `watch`: File system watching (topics: `watch:<ref>`)
 //! - `acp`: ACP (Agent Client Protocol) proxy (topics: `acp:<id>`)
 //! - `mcp`: MCP (Model Context Protocol) reverse proxy (topics: `mcp:<session_id>`)
 //!
@@ -12,23 +11,20 @@
 //!
 //! Client → Server:
 //! ```json
-//! ["1", "1", "watch:watch1", "phx_join", {"path": "/foo/bar"}]
-//! ["1", "2", "watch:watch1", "phx_leave", {}]
+//! ["1", "1", "acp:a1", "phx_join", {}]
+//! ["1", "2", "acp:a1", "phx_leave", {}]
 //! [null, "3", "phoenix", "heartbeat", {}]
 //! ```
 //!
 //! Server → Client:
 //! ```json
-//! ["1", "1", "watch:watch1", "phx_reply", {"status": "ok", "response": {"path": "/canonical/path"}}]
-//! ["1", null, "watch:watch1", "modified", {"path": "file.txt"}]
+//! ["1", "1", "acp:a1", "phx_reply", {"status": "ok", "response": {}}]
 //! [null, "3", "phoenix", "phx_reply", {"status": "ok", "response": {}}]
 //! ```
 
 pub mod acp;
 pub mod connection;
 pub mod mcp;
-pub mod terminal;
-pub mod watch;
 
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
@@ -67,35 +63,18 @@ impl ChannelSender {
 /// Global WebSocket state
 #[derive(Clone)]
 pub struct WsState {
-    /// Watch feature state
-    pub watch: watch::WatchFeatureState,
     /// ACP channel state
     pub acp: acp::AcpChannelState,
     /// MCP channel state
     pub mcp: mcp::McpChannelState,
-    /// Whether `terminal:` topics (an interactive shell) may be joined.
-    pub terminal_enabled: bool,
-    /// Whether `watch:` topics (file watching on any path) may be joined.
-    pub watch_enabled: bool,
 }
 
 impl WsState {
     pub fn new() -> Self {
         Self {
-            watch: watch::WatchFeatureState::new(),
             acp: acp::AcpChannelState::new(),
             mcp: mcp::McpChannelState::new(),
-            terminal_enabled: true,
-            watch_enabled: true,
         }
-    }
-
-    /// Allow only the ACP and MCP channels. Builder uses this: the terminal
-    /// and file watch channels take any path or command from the client.
-    pub fn acp_and_mcp_only(mut self) -> Self {
-        self.terminal_enabled = false;
-        self.watch_enabled = false;
-        self
     }
 
     /// Use a custom ACP channel state (e.g. with a test process starter).
@@ -121,10 +100,5 @@ impl WsState {
                 let _ = exit_tx.send(());
             }
         }
-
-        // Clean up file watchers
-        let watch_count = self.watch.watchers.len();
-        debug!("Found {} file watchers to clean up", watch_count);
-        self.watch.watchers.clear();
     }
 }

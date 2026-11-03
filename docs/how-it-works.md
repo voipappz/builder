@@ -53,9 +53,11 @@ no Node itself; everything Node is the app's Makefile.
 - **Launch secret.** Every request needs the per-launch secret (`?secret=` or
   `x-builder-secret`), a Host naming the server and, when sent, an Origin
   naming it. The secret changes on each start; do not share the address.
-- **Only three routes.** `/`, `/socket/websocket` and `/mcp/api`. The
-  upstream file, shell, proxy, download and terminal features are not
-  reachable.
+- **Only these routes.** `/`, `/socket/websocket`, `/mcp/api` and, with a
+  product or bot folder, `/bot/*` (status, restart, log, actions, the audio
+  bridge). The socket carries only the agent (`acp:`) and MCP (`mcp:`)
+  channels. The upstream file, shell, proxy, download, terminal and
+  file-watch code has been removed, not just switched off.
 - **The server chooses what runs.** The agent command, its folder and its MCP
   servers come from Builder's settings; whatever the page sends is ignored.
 - **Code is written only in the app.** The agent's "Accept edits" mode lets

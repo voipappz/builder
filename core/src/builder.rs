@@ -322,8 +322,7 @@ fn router_with_state(config: BuilderConfig) -> (Router, WsState) {
     };
     let ws_state = WsState::new()
         .with_acp_state(AcpChannelState::new().with_policy(policy))
-        .with_mcp_state(McpChannelState::new())
-        .acp_and_mcp_only();
+        .with_mcp_state(McpChannelState::new());
 
     let page_config = config.clone();
     let ws_routes = Router::new()

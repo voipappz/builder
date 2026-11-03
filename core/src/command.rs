@@ -227,48 +227,6 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-pub fn create_cmd_command(
-    cmd: &str,
-    args: &[String],
-    env: HashMap<String, String>,
-    cwd: &str,
-    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] wsl_distro: Option<&str>,
-) -> Command {
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(distro) = wsl_distro {
-            let (mut command, path) = wsl_exe(env);
-            command.arg("-d").arg(distro).arg("--cd").arg(cwd).arg("--exec");
-            if let Some(path) = path {
-                command.arg("env").arg(format!("PATH={path}"));
-            }
-            command.arg(cmd);
-            command.args(args);
-            command.creation_flags(winapi::um::winbase::CREATE_NO_WINDOW);
-            command
-        } else {
-            let mut command = command_with_limited_env(cmd);
-            command
-                .args(args)
-                .envs(env)
-                .current_dir(Path::new(cwd))
-                .creation_flags(winapi::um::winbase::CREATE_NO_WINDOW);
-            command
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let mut command = command_with_limited_env(cmd);
-        command
-            .args(args)
-            .envs(env)
-            .current_dir(Path::new(cwd))
-            .process_group(0);
-        command
-    }
-}
-
 /// Spawns a command and wraps it in a ChildProcess.
 /// On Windows, this creates a job object to track all child processes.
 /// On Unix, the process group is already set up by create_shell_command.
