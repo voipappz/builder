@@ -23,6 +23,23 @@ Customer admin (React portal) ── iframe tab ──▶ appz (Connectix: conve
 What stays out of scope for now: voice into the appz (mod_earshot), the
 Chrome extension's Angular upgrade, an Angular MCP.
 
+## Decisions (2026-11-03)
+
+- **Builder is for end customers** who build a VoIP application (chat, bot,
+  mobile app, CRM integration), not only for VoipAppz developers.
+- **Each customer gets its own container, holding only the bot logic.** All
+  data and permissions live in the mothership: no database inside an appz
+  (Connectix's own conversation store is to move behind voipappz-api), and
+  every ACL comes from voipappz-api.
+- **Deploys go through the mothership,** with per-customer rights, approval
+  and audit.
+- **Shared screens are fixed in the React app repo** (`@voipappz/conversations-ui`).
+- **Releases ship together** (app, Connectix, Builder). Voice comes later.
+
+Open: the Zendesk-session decision that defines the mothership data API;
+a customer-safe Builder (no code evaluation or SQL against the mothership);
+Builder without a local React app (the app build must serve Builder's client).
+
 ## What an appz is
 
 One git folder, cloned from a template:
