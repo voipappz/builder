@@ -185,6 +185,8 @@ reporting a problem. Closing that window leaves Builder running in the tray.
 
 ## Start here
 
+- [The appz process](docs/appz-process.md): how a customer's app is built
+  with Builder and shipped from the VoipAppz mothership; status and roadmap.
 - [How it works](docs/how-it-works.md): the parts, start-up, the rules the
   server enforces, settings, running and releasing.
 - [PLAN.md](PLAN.md): product boundary, delivery steps, MCP topology, installer
