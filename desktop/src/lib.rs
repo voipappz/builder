@@ -39,7 +39,7 @@ fn app_login(app_repo: String) -> bool {
 
 #[tauri::command]
 async fn onboarding_folder(app: AppHandle, api: bool, bot: Option<bool>) -> Option<String> {
-    let title = if bot.unwrap_or(false) { "Choose the voice bot folder (with builder.toml)" }
+    let title = if bot.unwrap_or(false) { "Choose the product or voice bot folder (with builder.toml)" }
         else if api { "Choose the voipappz-api checkout" } else { "Choose the React app Git checkout (voipappz/app)" };
     pick_workspace(&app, title).await.map(|path| path.to_string_lossy().into_owned())
 }
@@ -260,7 +260,7 @@ async fn pick_workspace(app: &AppHandle, title: &str) -> Option<PathBuf> {
     rx.await.ok().flatten()
 }
 
-const NO_BOT: &str = "No voice bot is running. Choose a voice bot folder in Connect App, API and Bot.";
+const NO_BOT: &str = "No product or voice bot is running. Choose its folder in Connect App, API and Bot.";
 
 fn running_bot(app: &AppHandle) -> Option<std::sync::Arc<builder_core::bot::Bot>> {
     app.state::<AppState>().running.try_lock().ok()?.as_ref()?.bot()
@@ -275,7 +275,7 @@ async fn restart_bot(app: AppHandle) {
         Ok(_) => set_tray_status(&app, "ready"),
         Err(e) => {
             set_tray_status(&app, "failed");
-            show_error(&app, format!("The voice bot could not restart.\n\n{e}"));
+            show_error(&app, format!("The product or voice bot could not restart.\n\n{e}"));
         }
     }
 }
@@ -371,8 +371,8 @@ pub fn run() {
                 None::<&str>,
             )?;
             let restart_item = MenuItem::with_id(app, "restart", "Restart", true, None::<&str>)?;
-            let bot_restart = MenuItem::with_id(app, "bot_restart", "Restart Voice Bot", true, None::<&str>)?;
-            let bot_log = MenuItem::with_id(app, "bot_log", "View Voice Bot Log", true, None::<&str>)?;
+            let bot_restart = MenuItem::with_id(app, "bot_restart", "Restart Product or Bot", true, None::<&str>)?;
+            let bot_log = MenuItem::with_id(app, "bot_log", "View Product or Bot Log", true, None::<&str>)?;
             let version = MenuItem::with_id(app, "version", format!("Version {}", VERSION), false, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit VoipAppz Builder", true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;

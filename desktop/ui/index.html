@@ -72,12 +72,12 @@
         <p id="login-state" role="status">API login not set</p>
         <p class="hint">Used only for this Builder session: the app’s login (<code>make setup</code>/<code>make dev</code>) and the agent’s read-only API tools. Not saved by Builder and never passed to the coding agent. Leave blank if the app checkout already has its login in <code>.env</code>.</p>
       </details>
-      <h2>3. Your voice bot (optional)</h2>
-      <p>To build a voice bot, choose its folder: the coding agent then changes the bot, and Builder runs it beside the app.
+      <h2>3. Your product or voice bot (optional)</h2>
+      <p>To build the product (Connectix) or a voice bot, choose its folder: the coding agent then changes it, and Builder runs it beside the app.
         Leave blank to change the app itself.</p>
-      <label for="bot-dir">Voice bot folder</label>
-      <div class="row"><input id="bot-dir" placeholder="\\wsl.localhost\Debian\home\you\pipecrab\examples\earshot-hebrew"><button type="button" id="browse-bot">Browse</button></div>
-      <p class="hint">A folder with a <code>builder.toml</code> saying <code>kind = "bot"</code>, on the same system as the app. Builder runs its <code>make setup</code> and <code>make dev</code>.</p>
+      <label for="bot-dir">Product or voice bot folder</label>
+      <div class="row"><input id="bot-dir" placeholder="\\wsl.localhost\Debian\home\you\connectix"><button type="button" id="browse-bot">Browse</button></div>
+      <p class="hint">A folder with a <code>builder.toml</code> saying <code>kind = "product"</code> or <code>"bot"</code>, on the same system as the app. Builder runs its <code>make setup</code> and <code>make dev</code>.</p>
       <p><button type="button" id="check-api">Check API connection</button></p>
       <p id="connection" role="status"></p>
       <button type="submit" id="start">Connect and open Builder</button>
