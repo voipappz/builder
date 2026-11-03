@@ -177,8 +177,11 @@ pub struct Bot {
     stopped: AtomicBool,
     /// Set after the first start: only that one clears what a crashed run left.
     started: AtomicBool,
-    /// One action at a time.
-    acting: Mutex<()>,
+    /// One action at a time; held by the action's own task, so a dropped
+    /// request never kills a run (a deploy cut in half can leave nothing up).
+    acting: Arc<Mutex<()>>,
+    /// The running or last action, for the page to poll.
+    last_action: std::sync::Mutex<Option<ActionRun>>,
 }
 
 impl std::fmt::Debug for Bot {
@@ -191,7 +194,7 @@ impl Bot {
     pub fn new(spec: BotSpec, dir: PathBuf, port: u16, distro: Option<String>, env: HashMap<String, String>) -> Self {
         Self { spec, dir, port, distro, env, process: Mutex::new(None), starting: Mutex::new(()),
             stopped: AtomicBool::new(false), started: AtomicBool::new(false),
-            acting: Mutex::new(()) }
+            acting: Arc::new(Mutex::new(())), last_action: std::sync::Mutex::new(None) }
     }
 
     /// One log per port, so two Builders' bots do not share one.
@@ -342,6 +345,9 @@ impl Bot {
     /// For good, when Builder stops. Dropping the process kills its whole tree.
     pub async fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
+        // A running action (a deploy) finishes first: killing it halfway can
+        // leave a server with nothing running.
+        let _acting = self.acting.lock().await;
         self.process.lock().await.take();
         // A start in flight sees `stopped` within half a second and returns;
         // waiting for it means its `make dev` is not spawned after the stop
@@ -351,21 +357,41 @@ impl Bot {
         self.run_stop().await;
     }
 
-    /// Run the action `id` (`make <target> PORT=<port>`), one at a time. Its
-    /// output, or the error, is also kept in the action log.
-    pub async fn run_action(&self, id: &str, confirmed: bool) -> Result<String, ActionError> {
-        let action = self.spec.actions.iter().find(|a| a.id == id).ok_or(ActionError::Unknown)?;
+    /// Start the action `id` (`make <target> PORT=<port>`), one at a time,
+    /// in a task of its own: the request that asked returns at once, and
+    /// nothing the page does (reload, close) stops the run. `action_status`
+    /// reports it; `stop()` waits for it to finish.
+    pub fn start_action(self: &Arc<Self>, id: &str, confirmed: bool) -> Result<(), ActionError> {
+        let action = self.spec.actions.iter().find(|a| a.id == id).ok_or(ActionError::Unknown)?.clone();
         if action.confirm && !confirmed {
             return Err(ActionError::NotConfirmed);
         }
-        let _one = self.acting.try_lock().map_err(|_| ActionError::Busy)?;
-        let port = format!("PORT={}", self.port);
-        let result = run_on(self.distro.as_deref(), "make", &[&action.make, &port], &self.dir, &self.env,
-            Duration::from_secs(30 * 60)).await;
-        let text = match &result { Ok(out) => out.clone(), Err(e) => e.clone() };
-        let _ = std::fs::create_dir_all(state_dir())
-            .and_then(|_| std::fs::write(self.action_log_path(), format!("$ make {} {port}\n{text}\n", action.make)));
-        result.map_err(ActionError::Failed)
+        if self.stopped.load(Ordering::SeqCst) {
+            return Err(ActionError::Busy);
+        }
+        let one = self.acting.clone().try_lock_owned().map_err(|_| ActionError::Busy)?;
+        self.set_action(ActionRun { id: action.id.clone(), running: true, ok: None, output: String::new() });
+        let bot = self.clone();
+        tokio::spawn(async move {
+            let _one = one;
+            let port = format!("PORT={}", bot.port);
+            let result = run_on(bot.distro.as_deref(), "make", &[&action.make, &port], &bot.dir, &bot.env,
+                Duration::from_secs(30 * 60)).await;
+            let text = match &result { Ok(out) => out.clone(), Err(e) => e.clone() };
+            let _ = std::fs::create_dir_all(state_dir())
+                .and_then(|_| std::fs::write(bot.action_log_path(), format!("$ make {} {port}\n{text}\n", action.make)));
+            bot.set_action(ActionRun { id: action.id, running: false, ok: Some(result.is_ok()), output: text });
+        });
+        Ok(())
+    }
+
+    /// The running or last action.
+    pub fn action_status(&self) -> Option<ActionRun> {
+        self.last_action.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn set_action(&self, run: ActionRun) {
+        *self.last_action.lock().unwrap_or_else(|e| e.into_inner()) = Some(run);
     }
 
     pub fn action_log_path(&self) -> PathBuf {
@@ -393,6 +419,15 @@ impl Bot {
 
 /// The page's bot routes, behind Builder's guard (secret, Host, Origin):
 /// status, restart, the log, and the audio WebSocket bridge.
+/// An action run, as the page polls it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ActionRun {
+    pub id: String,
+    pub running: bool,
+    pub ok: Option<bool>,
+    pub output: String,
+}
+
 /// Why an action did not run.
 #[derive(Debug, PartialEq)]
 pub enum ActionError {
@@ -406,6 +441,7 @@ pub fn routes(bot: Arc<Bot>) -> Router {
     Router::new()
         .route("/bot/status", get(status))
         .route("/bot/restart", post(restart))
+        .route("/bot/actions", get(action_status))
         .route("/bot/actions/{id}", post(action))
         .route("/bot/log", get(log))
         .route("/bot/socket", get(socket))
@@ -435,13 +471,18 @@ struct ActionBody {
 async fn action(State(bot): State<Arc<Bot>>, axum::extract::Path(id): axum::extract::Path<String>,
     body: Option<Json<ActionBody>>) -> Response {
     let confirmed = body.map(|Json(b)| b.confirmed).unwrap_or_default();
-    match bot.run_action(&id, confirmed).await {
-        Ok(output) => Json(json!({"ok": true, "output": output})).into_response(),
+    match bot.start_action(&id, confirmed) {
+        Ok(()) => (StatusCode::ACCEPTED, Json(json!({"started": id}))).into_response(),
         Err(ActionError::Unknown) => (StatusCode::NOT_FOUND, Json(json!({"error": "No such action."}))).into_response(),
         Err(ActionError::NotConfirmed) => (StatusCode::PRECONDITION_REQUIRED, Json(json!({"error": "This action must be confirmed."}))).into_response(),
         Err(ActionError::Busy) => (StatusCode::CONFLICT, Json(json!({"error": "Another action is running."}))).into_response(),
         Err(ActionError::Failed(error)) => (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "error": error}))).into_response(),
     }
+}
+
+/// The running or last action: `{id, running, ok, output}`, or null.
+async fn action_status(State(bot): State<Arc<Bot>>) -> Json<serde_json::Value> {
+    Json(json!(bot.action_status()))
 }
 
 async fn log(State(bot): State<Arc<Bot>>) -> Response {
@@ -650,13 +691,28 @@ h.HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()\n").unwrap();
             setup_done: None, start_timeout: 5, stop: None, mcp: None, page: None, requires: vec![],
             actions: vec![action("check", false), action("ship", true), action("fail", false)] };
         let env: HashMap<String, String> = std::env::vars().collect();
-        let bot = Bot::new(spec, dir.path().to_path_buf(), 4100, None, env);
-        assert_eq!(bot.run_action("check", false).await.unwrap(), "checked 4100");
-        assert_eq!(bot.run_action("ship", false).await, Err(ActionError::NotConfirmed));
-        assert_eq!(bot.run_action("ship", true).await.unwrap(), "shipped");
-        assert!(matches!(bot.run_action("fail", false).await, Err(ActionError::Failed(_))));
-        assert_eq!(bot.run_action("rm", true).await, Err(ActionError::Unknown));
-        assert!(std::fs::read_to_string(bot.action_log_path()).unwrap().contains("make fail"));
+        let bot = Arc::new(Bot::new(spec, dir.path().to_path_buf(), 4100, None, env));
+        async fn finish(bot: &Arc<Bot>, id: &str, confirmed: bool) -> ActionRun {
+            bot.start_action(id, confirmed).unwrap();
+            loop {
+                let run = bot.action_status().unwrap();
+                if !run.running { return run; }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        let run = finish(&bot, "check", false).await;
+        assert_eq!((run.ok, run.output.as_str()), (Some(true), "checked 4100"));
+        assert_eq!(bot.start_action("ship", false), Err(ActionError::NotConfirmed));
+        assert_eq!(finish(&bot, "ship", true).await.output, "shipped");
+        assert_eq!(finish(&bot, "fail", false).await.ok, Some(false));
+        assert_eq!(bot.start_action("rm", true), Err(ActionError::Unknown));
+        // One at a time, and stop() waits for a running one instead of killing it.
+        std::fs::write(dir.path().join("Makefile"), "check:\n\t@sleep 1; touch done\n").unwrap();
+        bot.start_action("check", false).unwrap();
+        assert_eq!(bot.start_action("check", false), Err(ActionError::Busy));
+        bot.stop().await;
+        assert!(dir.path().join("done").exists(), "stop waited for the action");
+        assert!(std::fs::read_to_string(bot.action_log_path()).unwrap().contains("make check"));
     }
 
     /// A `make dev` that only starts something detached (`docker compose up
