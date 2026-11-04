@@ -39,7 +39,7 @@ fn app_login(app_repo: String) -> bool {
 
 #[tauri::command]
 async fn onboarding_folder(app: AppHandle, api: bool, bot: Option<bool>) -> Option<String> {
-    let title = if bot.unwrap_or(false) { "Choose the product or voice bot folder (with builder.toml)" }
+    let title = if bot.unwrap_or(false) { "Choose your appz folder (with builder.toml)" }
         else if api { "Choose the voipappz-api checkout" } else { "Choose the React app Git checkout (voipappz/app)" };
     pick_workspace(&app, title).await.map(|path| path.to_string_lossy().into_owned())
 }
@@ -299,8 +299,8 @@ async fn restart(app: AppHandle) {
         Ok(s) => s,
         Err(e) => return show_error(&app, format!("Settings could not be read: {}", e)),
     };
-    if settings.workspace.is_none() && settings.app_repo.is_none() {
-        progress(&app, "Choose your React app folder and API address above.", "configure");
+    if settings.workspace.is_none() && settings.app_repo.is_none() && settings.bot_dir.is_none() {
+        progress(&app, "Choose your appz folder and VoipAppz login above.", "configure");
         return;
     }
     let login = state.api_login.lock().unwrap_or_else(|e| e.into_inner()).as_ref()

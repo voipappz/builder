@@ -17,6 +17,8 @@ on:
       - 'branding/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'client.ref'
+      - 'scripts/client.sh'
       - '.github/workflows/installers.yml'
 
 permissions:
@@ -38,6 +40,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      # The chat client, built from voipappz/app at client.ref and embedded
+      # by core/build.rs, so the installer needs no running app.
+      - name: Build the chat client
+        shell: bash
+        run: scripts/client.sh
 
       - name: Verify Windows startup
         run: cargo test --locked -p builder-core launcher::tests --lib

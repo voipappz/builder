@@ -56,38 +56,30 @@
   <p id="action-note" class="hint" hidden></p>
   <form id="onboarding">
     <fieldset id="fields">
-      <legend>1. Your React app</legend>
-      <p>Choose the local <strong>voipappz/app</strong> project you want to change.
-        Builder creates a separate working copy for the coding agent.</p>
-      <label for="app-repo">React app folder</label>
-      <div class="row"><input id="app-repo" required placeholder="C:\Projects\app"><button type="button" id="browse-app">Browse</button></div>
-      <p class="hint">Use a Git checkout of voipappz/app. On Windows, choose the checkout inside WSL (<code>\\wsl.localhost\&lt;distro&gt;\…</code>): Builder runs the app there with its Makefile.</p>
-      <h2>2. Your API</h2>
-      <p>The previews connect to this API for account data. The app signs in with your API login; the agent can inspect the API with read-only tools.</p>
-      <label for="api-url">Hosted API address</label><input id="api-url" type="url" required value="https://switch.voipappz.io">
-      <p class="hint">Use the hosted VoipAppz API. You do not need to install or run voipappz-api locally.</p>
-      <details open><summary>API login: the app signs in with it</summary>
-        <label for="api-email">API account email</label><input id="api-email" type="email" autocomplete="username">
-        <label for="api-password">API password</label><input id="api-password" type="password" autocomplete="off">
-        <p id="login-state" role="status">API login not set</p>
-        <p class="hint">Used only for this Builder session: the app’s login (<code>make setup</code>/<code>make dev</code>) and the agent’s read-only API tools. Not saved by Builder and never passed to the coding agent. Leave blank if the app checkout already has its login in <code>.env</code>.</p>
+      <legend>1. Your appz</legend>
+      <p>Choose your appz folder: the customer's Connectix (Elixir) project. The coding
+        agent changes it, and Builder runs it on this computer.</p>
+      <label for="bot-dir">Appz folder</label>
+      <div class="row"><input id="bot-dir" required placeholder="\\wsl.localhost\Debian\home\you\connectix"><button type="button" id="browse-bot">Browse</button></div>
+      <p class="hint">A folder with a <code>builder.toml</code>. Builder runs its <code>make setup</code> once, then <code>make dev</code>. On Windows, choose the folder inside WSL (<code>\\wsl.localhost\&lt;distro&gt;\…</code>).</p>
+      <h2>2. Your VoipAppz account</h2>
+      <p>The platform: users, numbers, calls and data. The agent gets read-only tools on it.</p>
+      <label for="api-url">VoipAppz address</label><input id="api-url" type="url" required value="https://switch.voipappz.io">
+      <details open><summary>Your login</summary>
+        <label for="api-email">Email</label><input id="api-email" type="email" autocomplete="username">
+        <label for="api-password">Password</label><input id="api-password" type="password" autocomplete="off">
+        <p id="login-state" role="status">Login not set</p>
+        <p class="hint">Used only for this Builder session, for the agent's read-only tools. Not saved by Builder and never passed to the coding agent.</p>
       </details>
-      <h2>3. Your product or voice bot (optional)</h2>
-      <p>To build the product (Connectix) or a voice bot, choose its folder: the coding agent then changes it, and Builder runs it beside the app.
-        Leave blank to change the app itself.</p>
-      <label for="bot-dir">Product or voice bot folder</label>
-      <div class="row"><input id="bot-dir" placeholder="\\wsl.localhost\Debian\home\you\connectix"><button type="button" id="browse-bot">Browse</button></div>
-      <p class="hint">A folder with a <code>builder.toml</code> saying <code>kind = "product"</code> or <code>"bot"</code>, on the same system as the app. Builder runs its <code>make setup</code> and <code>make dev</code>.</p>
       <p><button type="button" id="check-api">Check API connection</button></p>
       <p id="connection" role="status"></p>
       <button type="submit" id="start">Connect and open Builder</button>
     </fieldset>
   </form>
   <ol id="wizard" aria-label="Setup steps" hidden></ol>
-  <p id="intro">Builder runs your app with the app’s own commands: <code>make setup</code> the
-    first time (Node, packages, login), then <code>make dev</code>. Your API email and
-    password, if you enter them, are what the app’s login uses. The first setup
-    needs an internet connection and may take several minutes.</p>
+  <p id="intro">Builder runs your appz with its own commands: <code>make setup</code> the
+    first time, then <code>make dev</code>. The first setup needs an internet
+    connection and may take several minutes.</p>
   <details class="log" id="log"><summary>Setup details</summary>
     <pre id="history" tabindex="0" aria-label="Setup details"></pre>
     <button id="copy" type="button">Copy details</button>
@@ -105,12 +97,10 @@
         apiDir: '', botDir: document.getElementById('bot-dir').value.trim(),
         email: document.getElementById('api-email').value.trim(), password: document.getElementById('api-password').value };
     }
-    for (const [button, field, bot] of [['browse-app', 'app-repo', false], ['browse-bot', 'bot-dir', true]]) {
-      document.getElementById(button).onclick = async () => {
-        try { const path = await invoke('onboarding_folder', { api: false, bot }); if (path) { document.getElementById(field).value = path; if (!bot) checkAppLogin(); } }
-        catch (error) { connection.textContent = String(error); }
-      };
-    }
+    document.getElementById('browse-bot').onclick = async () => {
+      try { const path = await invoke('onboarding_folder', { api: false, bot: true }); if (path) document.getElementById('bot-dir').value = path; }
+      catch (error) { connection.textContent = String(error); }
+    };
     document.getElementById('check-api').onclick = async () => {
       const button = document.getElementById('check-api'); button.disabled = true;
       connection.textContent = 'Checking the API endpoint…';
@@ -121,37 +111,28 @@
     };
     document.getElementById('onboarding').onsubmit = async (event) => {
       event.preventDefault(); submitting = true; document.getElementById('fields').disabled = true;
-      connection.textContent = 'Checking your app folder and API connection…';
+      connection.textContent = 'Checking your appz folder and VoipAppz login…';
       try {
-        await invoke('onboarding_start', {appRepo: document.getElementById('app-repo').value, ...apiFields()});
+        await invoke('onboarding_start', {appRepo: '', ...apiFields()});
         document.getElementById('api-password').value = '';
         connection.textContent = 'Connection checked. Preparing your workspace…';
       } catch (error) { connection.textContent = String(error); }
       finally { submitting = false; }
     };
-    // Green once the login is known: both fields filled, or the app has it.
-    let appHasLogin = false;
     function showLogin() {
       const { email, password } = apiFields();
-      const typed = email && password;
+      const typed = Boolean(email && password);
       const state = document.getElementById('login-state');
-      state.classList.toggle('set', Boolean(typed || appHasLogin));
-      state.textContent = typed ? '✓ API login set' : appHasLogin ? '✓ API login set (in the app’s .env)' : 'API login not set';
-    }
-    async function checkAppLogin() {
-      try { appHasLogin = await invoke('app_login', { appRepo: document.getElementById('app-repo').value }); }
-      catch { appHasLogin = false; }
-      showLogin();
+      state.classList.toggle('set', typed);
+      state.textContent = typed ? '✓ Login set' : 'Login not set';
     }
     document.getElementById('api-email').oninput = showLogin;
     document.getElementById('api-password').oninput = showLogin;
-    document.getElementById('app-repo').onchange = checkAppLogin;
     invoke('app_version').then(version => { document.getElementById('version').textContent = 'v' + version; }).catch(() => {});
     invoke('onboarding_info').then(settings => {
-      document.getElementById('app-repo').value = settings.app_repo || settings.workspace || '';
       document.getElementById('bot-dir').value = settings.bot_dir || '';
       document.getElementById('api-url').value = settings.api_dir ? 'https://switch.voipappz.io' : (settings.api_url || 'https://switch.voipappz.io');
-      checkAppLogin();
+      showLogin();
     }).catch(error => { connection.textContent = String(error); });
     // The wizard: one row per setup step. Steps before the current one are
     // done, the current one runs (or failed), the rest wait. The last plain
@@ -184,7 +165,7 @@
       try {
         const state = await invoke('startup_progress');
         document.getElementById('fields').disabled = submitting || state.status === 'working';
-        document.getElementById('heading').textContent = state.status === 'configure' ? 'Connect your app and API' : state.status === 'failed' ? 'Setup needs attention' : state.status === 'ready' ? 'Builder is ready' : 'Setting up Builder';
+        document.getElementById('heading').textContent = state.status === 'configure' ? 'Connect your appz and VoipAppz' : state.status === 'failed' ? 'Setup needs attention' : state.status === 'ready' ? 'Builder is ready' : 'Setting up Builder';
         document.getElementById('status').textContent = state.status === 'working' ? 'Step ' + (Math.max(0, state.steps.findIndex(([id]) => id === state.step)) + 1) + ' of ' + state.steps.length : (state.lines.at(-1) || 'Starting…');
         renderWizard(state);
         document.getElementById('actions').hidden = state.status !== 'failed';

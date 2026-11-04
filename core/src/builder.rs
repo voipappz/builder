@@ -3,8 +3,10 @@
 //! Serves these routes and nothing else:
 //!
 //! * `GET /` — the stub page. It carries local facts in a meta tag and loads
-//!   the chat client from the configured client address (the VoipAppz app),
-//!   from one hosted script.
+//!   the chat client: the copy built into Builder, or else the configured
+//!   client address (a local app's dev server).
+//! * `GET /builder/*` — the built-in chat client's static files (public code,
+//!   so no secret; Host still checked).
 //! * `GET /socket/websocket` — the Phoenix websocket, limited to the ACP and
 //!   MCP channels. The agent, its working directory and its MCP servers come
 //!   from [`AgentPolicy`], never from the browser.
@@ -40,6 +42,49 @@ use crate::ws::mcp::McpChannelState;
 use crate::ws::WsState;
 
 pub const SECRET_HEADER: &str = "x-builder-secret";
+const CLIENT_PREFIX: &str = "/builder/";
+
+mod client_files {
+    include!(concat!(env!("OUT_DIR"), "/client_files.rs"));
+}
+
+/// The chat client built into this binary, if the build had one.
+fn embedded_client(path: &str) -> Option<&'static [u8]> {
+    client_files::CLIENT_FILES.iter().find(|(p, _)| *p == path).map(|(_, bytes)| *bytes)
+}
+
+fn has_embedded_client() -> bool {
+    embedded_client("client.js").is_some()
+}
+
+fn content_type(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or_default() {
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "json" => "application/json",
+        _ => "application/octet-stream",
+    }
+}
+
+async fn client_file(axum::extract::Path(path): axum::extract::Path<String>) -> Response<Body> {
+    match embedded_client(&path) {
+        Some(bytes) => {
+            let mut response = Response::new(Body::from(bytes));
+            let headers = response.headers_mut();
+            headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type(&path)));
+            headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+            headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+            response
+        }
+        None => status(StatusCode::NOT_FOUND),
+    }
+}
 const API_MCP_PATH: &str = "/mcp/api";
 
 /// The VoipAppz API's MCP server, reached only through Builder. The agent
@@ -205,7 +250,8 @@ pub struct BuilderConfig {
     pub api_mcp: Option<ApiMcp>,
     /// Shown to the user; never includes credentials.
     pub api_url: Option<String>,
-    pub preview_url: String,
+    /// The app the Admin and User previews show; none without a local app.
+    pub preview_url: Option<String>,
     /// The voice bot beside the app, when a bot folder is chosen; the agent
     /// then works in the bot's folder.
     pub bot: Option<Arc<crate::bot::Bot>>,
@@ -245,16 +291,16 @@ impl BuilderConfig {
 
     /// Admin and User previews get their own origins, so their logins
     /// (kept in localStorage per origin) stay apart.
-    pub fn preview_urls(&self) -> (String, String) {
-        let base = self.preview_url.trim_end_matches('/');
-        if let Some(rest) = base.strip_prefix("http://localhost") {
+    pub fn preview_urls(&self) -> Option<(String, String)> {
+        let base = self.preview_url.as_deref()?.trim_end_matches('/');
+        Some(if let Some(rest) = base.strip_prefix("http://localhost") {
             (
                 format!("http://admin.localhost{}", rest),
                 format!("http://user.localhost{}", rest),
             )
         } else {
             (base.to_string(), base.to_string())
-        }
+        })
     }
 }
 
@@ -270,7 +316,7 @@ struct PageInfo<'a> {
     api_url: Option<&'a str>,
     api_mcp: bool,
     agent: &'a str,
-    previews: Previews,
+    previews: Option<Previews>,
     /// The voice bot tab, when a bot folder is chosen.
     bot: Option<BotPage<'a>>,
 }
@@ -352,6 +398,7 @@ fn router_with_state(config: BuilderConfig) -> (Router, WsState) {
                 async move { stub_page(&config) }
             }),
         )
+        .route("/builder/{*path}", get(client_file))
         .merge(ws_routes)
         .merge(api_routes)
         .merge(config.bot.clone().map(crate::bot::routes).unwrap_or_default())
@@ -415,6 +462,12 @@ async fn guard(config: &BuilderConfig, req: Request, next: Next) -> Response<Bod
         }
     }
 
+    // The built-in chat client is public code; the page's script and its
+    // assets load without the secret.
+    if req.method() == axum::http::Method::GET && req.uri().path().starts_with(CLIENT_PREFIX) {
+        return next.run(req).await;
+    }
+
     let presented = req
         .headers()
         .get(SECRET_HEADER)
@@ -459,7 +512,7 @@ fn html_escape(text: &str) -> String {
 }
 
 fn stub_page(config: &BuilderConfig) -> Response<Body> {
-    let (admin, user) = config.preview_urls();
+    let previews = config.preview_urls();
     let client = config.client_origin();
     let info = PageInfo {
         version: env!("CARGO_PKG_VERSION"),
@@ -475,10 +528,7 @@ fn stub_page(config: &BuilderConfig) -> Response<Body> {
         api_url: config.api_url.as_deref(),
         api_mcp: config.api_mcp.is_some(),
         agent: "Claude Code",
-        previews: Previews {
-            admin: admin.clone(),
-            user: user.clone(),
-        },
+        previews: previews.clone().map(|(admin, user)| Previews { admin, user }),
         bot: config.bot.as_ref().map(|bot| BotPage {
             name: &bot.spec.name,
             kind: bot.spec.kind,
@@ -497,7 +547,13 @@ fn stub_page(config: &BuilderConfig) -> Response<Body> {
     // A local app run is a Vite dev server: load its client and the React
     // refresh preamble, then the entry module. A deployed app serves one
     // built script.
-    let (preamble, entry) = if config.client_is_dev_server() {
+    let embedded = has_embedded_client();
+    let (preamble, entry) = if embedded {
+        (
+            format!(r#"<link rel="stylesheet" href="{CLIENT_PREFIX}client.css" />"#),
+            format!("{CLIENT_PREFIX}client.js"),
+        )
+    } else if config.client_is_dev_server() {
         (
             format!(
                 r#"<script type="module" nonce="{nonce}">
@@ -585,14 +641,15 @@ fn stub_page(config: &BuilderConfig) -> Response<Body> {
     // The Product pane frames the product's own page (Connectix), when it names one.
     let product = config.bot.as_ref().filter(|bot| bot.page_url().is_some())
         .map(|bot| format!(" {}", bot.origin())).unwrap_or_default();
+    let frames = previews.map(|(admin, user)| format!(" {admin} {user}")).unwrap_or_default();
     let csp = format!(
         "default-src 'none'; \
-         script-src 'nonce-{nonce}' {client}; \
-         style-src 'unsafe-inline' {client}; \
+         script-src 'nonce-{nonce}' 'self' {client}; \
+         style-src 'unsafe-inline' 'self' {client}; \
          img-src 'self' data: {client}; \
          font-src data: {client}; \
          connect-src 'self' {ws_self} {client} {client_ws}; \
-         frame-src {admin} {user}{product}; \
+         frame-src 'self'{frames}{product}; \
          base-uri 'none'; form-action 'none'"
     );
 
@@ -631,7 +688,7 @@ mod tests {
             mcp_servers: vec![],
             api_mcp: None,
             api_url: None,
-            preview_url: "http://localhost:3000".to_string(),
+            preview_url: Some("http://localhost:3000".to_string()),
             bot: None,
         }
     }
@@ -690,12 +747,41 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(csp.contains("script-src 'nonce-"));
-        assert!(csp.contains("frame-src http://admin.localhost:3000 http://user.localhost:3000"));
+        assert!(csp.contains("frame-src 'self' http://admin.localhost:3000 http://user.localhost:3000"));
         let body = String::from_utf8(to_bytes(res.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
-        assert!(body.contains("http://localhost:3000/@react-refresh"));
-        assert!(body.contains("\"http://localhost:3000/src/builder-client/main.jsx\""));
+        if has_embedded_client() {
+            assert!(body.contains("\"/builder/client.js\""));
+            assert!(body.contains("/builder/client.css"));
+            assert!(!body.contains("@react-refresh"));
+        } else {
+            assert!(body.contains("http://localhost:3000/@react-refresh"));
+            assert!(body.contains("\"http://localhost:3000/src/builder-client/main.jsx\""));
+        }
         assert!(body.contains("voipappz-builder:info"));
         assert!(body.contains("&quot;workspaceName&quot;:&quot;app-builder&quot;"));
+    }
+
+    #[tokio::test]
+    async fn embedded_client_files_load_without_the_secret() {
+        if !has_embedded_client() {
+            return;
+        }
+        let res = get("/builder/client.js", &[]).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(res.headers().get(header::CONTENT_TYPE).unwrap().to_str().unwrap().starts_with("text/javascript"));
+        assert_eq!(get("/builder/nope.js", &[]).await.status(), StatusCode::NOT_FOUND);
+        // Everything else still needs the secret.
+        assert_eq!(get("/", &[]).await.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn without_a_local_app_there_are_no_previews() {
+        let mut c = config();
+        c.preview_url = None;
+        let res = stub_page(&c);
+        let csp = res.headers().get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap().to_string();
+        assert!(csp.contains("frame-src 'self'; "));
+        assert!(!csp.contains("admin.localhost"));
     }
 
     #[test]

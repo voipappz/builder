@@ -29,3 +29,7 @@ cert.pem
 target/
 desktop/gen/
 .playwright-cli/
+
+# Builder chat client (app build:builder output), embedded at build time
+client/
+.client-app/
