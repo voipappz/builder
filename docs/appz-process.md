@@ -167,7 +167,7 @@ identity for `/api/mcp`.
 | Connectix: conversations via live_react, `ChatSession` shared with the channel | connectix #3 | merged; v0.1.25 tag pending |
 | `@voipappz/conversations-ui` + chat-ui 0.2 | app #299 | merged |
 | Builder page: Product tab, action buttons; Status tab follows actions | app #298, #300 | merged |
-| Builder chat inside the installer; appz-only mode; onboarding = appz folder + VoipAppz login | builder #1, app #301 | in review (verified on Linux end to end; Windows installer in CI) |
+| Builder chat inside the installer; appz-only mode; onboarding = sign in with your VoipAppz account, then the appz folder | builder **v0.1.19** (#1), app #301 | released (verified on Linux end to end; not yet run on Windows) |
 | API dev MCP at `/voipappz/mcp` | api #206 | merged |
 | App dev MCP at `/voipappz/mcp`; Bot tab | app #295, #297, #285 | merged |
 | appz template, `appz.toml`, registration, token exchange, appz → `/api/mcp` tools | — | not started |
