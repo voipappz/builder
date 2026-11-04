@@ -46,3 +46,42 @@ jobs:
           TEST_PASSWORD: ${{ secrets.TEST_PASSWORD }}
           VOIPAPPZ_API_URL: ${{ secrets.VITE_API_BASE_URL }}
         run: scripts/e2e.sh
+
+  # The appz path (v0.1.19+): only the customer's Elixir appz folder
+  # (Connectix, private: read-only deploy key), the chat built into Builder,
+  # Connectix's make setup and make dev in Docker, the page in Chromium, the
+  # agent. See scripts/e2e-appz.sh.
+  e2e-appz:
+    runs-on: ubuntu-22.04
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Connectix deploy key
+        env:
+          KEY: ${{ secrets.CONNECTIX_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/connectix && chmod 600 ~/.ssh/connectix
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          printf 'Host github.com\n  IdentityFile ~/.ssh/connectix\n  IdentitiesOnly yes\n' > ~/.ssh/config
+      - name: Build the chat client
+        run: scripts/client.sh
+      - name: Chromium for the page check
+        working-directory: .client-app
+        run: npx playwright install --with-deps chromium
+      - name: Appz end to end
+        env:
+          NODE_PATH: ${{ github.workspace }}/.client-app/node_modules
+        run: scripts/e2e-appz.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-appz
+          path: ${{ runner.temp }}/builder-e2e-appz/builder.png
+          if-no-files-found: ignore
