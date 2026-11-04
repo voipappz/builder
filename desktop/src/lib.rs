@@ -80,7 +80,7 @@ async fn restart_builder(app: AppHandle) {
 
 fn show_onboarding(app: &AppHandle) {
     show_startup(app);
-    progress(app, "Connect your React app project and the API to get started.", "configure");
+    progress(app, "Sign in with your VoipAppz account and choose your appz folder.", "configure");
 }
 
 #[derive(Clone, Default, serde::Serialize)]
@@ -367,7 +367,7 @@ pub fn run() {
 
             let open = MenuItem::with_id(app, "open", "Open VoipAppz Builder", true, None::<&str>)?;
             let browser = MenuItem::with_id(app, "browser", "Open in Browser", true, None::<&str>)?;
-            let workspace = MenuItem::with_id(app, "workspace", "Connect App, API and Bot…", true, None::<&str>)?;
+            let workspace = MenuItem::with_id(app, "workspace", "Sign In and Choose Appz…", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let logs = MenuItem::with_id(app, "logs", "View Logs", true, None::<&str>)?;
             let at_login = CheckMenuItem::with_id(
@@ -379,8 +379,8 @@ pub fn run() {
                 None::<&str>,
             )?;
             let restart_item = MenuItem::with_id(app, "restart", "Restart", true, None::<&str>)?;
-            let bot_restart = MenuItem::with_id(app, "bot_restart", "Restart Product or Bot", true, None::<&str>)?;
-            let bot_log = MenuItem::with_id(app, "bot_log", "View Product or Bot Log", true, None::<&str>)?;
+            let bot_restart = MenuItem::with_id(app, "bot_restart", "Restart Appz", true, None::<&str>)?;
+            let bot_log = MenuItem::with_id(app, "bot_log", "View Appz Log", true, None::<&str>)?;
             let version = MenuItem::with_id(app, "version", format!("Version {}", VERSION), false, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit VoipAppz Builder", true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;
