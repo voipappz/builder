@@ -56,24 +56,23 @@
   <p id="action-note" class="hint" hidden></p>
   <form id="onboarding">
     <fieldset id="fields">
-      <legend>1. Your appz</legend>
+      <legend>1. Sign in with your VoipAppz account</legend>
+      <p>Builder works as you: your account's platform (users, numbers, calls and data). The agent gets read-only tools on it.</p>
+      <label for="api-email">Email</label><input id="api-email" type="email" required autocomplete="username">
+      <label for="api-password">Password</label><input id="api-password" type="password" required autocomplete="current-password">
+      <details><summary>VoipAppz address</summary>
+        <label for="api-url">Address</label><input id="api-url" type="url" required value="https://switch.voipappz.io">
+      </details>
+      <p><button type="button" id="check-api">Sign in</button> <span id="login-state" role="status">Not signed in</span></p>
+      <p class="hint">Kept only while Builder runs: never saved and never passed to the coding agent. You sign in again when Builder restarts.</p>
+      <h2>2. Your appz</h2>
       <p>Choose your appz folder: the customer's Connectix (Elixir) project. The coding
         agent changes it, and Builder runs it on this computer.</p>
       <label for="bot-dir">Appz folder</label>
       <div class="row"><input id="bot-dir" required placeholder="\\wsl.localhost\Debian\home\you\connectix"><button type="button" id="browse-bot">Browse</button></div>
       <p class="hint">A folder with a <code>builder.toml</code>. Builder runs its <code>make setup</code> once, then <code>make dev</code>. On Windows, choose the folder inside WSL (<code>\\wsl.localhost\&lt;distro&gt;\…</code>).</p>
-      <h2>2. Your VoipAppz account</h2>
-      <p>The platform: users, numbers, calls and data. The agent gets read-only tools on it.</p>
-      <label for="api-url">VoipAppz address</label><input id="api-url" type="url" required value="https://switch.voipappz.io">
-      <details open><summary>Your login</summary>
-        <label for="api-email">Email</label><input id="api-email" type="email" autocomplete="username">
-        <label for="api-password">Password</label><input id="api-password" type="password" autocomplete="off">
-        <p id="login-state" role="status">Login not set</p>
-        <p class="hint">Used only for this Builder session, for the agent's read-only tools. Not saved by Builder and never passed to the coding agent.</p>
-      </details>
-      <p><button type="button" id="check-api">Check API connection</button></p>
       <p id="connection" role="status"></p>
-      <button type="submit" id="start">Connect and open Builder</button>
+      <button type="submit" id="start">Sign in and open Builder</button>
     </fieldset>
   </form>
   <ol id="wizard" aria-label="Setup steps" hidden></ol>
@@ -103,15 +102,16 @@
     };
     document.getElementById('check-api').onclick = async () => {
       const button = document.getElementById('check-api'); button.disabled = true;
-      connection.textContent = 'Checking the API endpoint…';
+      const state = document.getElementById('login-state');
+      state.classList.remove('set'); state.textContent = 'Signing in…';
       const { botDir, ...fields } = apiFields();
-      try { connection.textContent = await invoke('onboarding_check', fields); }
-      catch (error) { connection.textContent = String(error); }
+      try { state.textContent = '✓ ' + await invoke('onboarding_check', fields); state.classList.add('set'); }
+      catch (error) { state.textContent = String(error); }
       finally { button.disabled = false; }
     };
     document.getElementById('onboarding').onsubmit = async (event) => {
       event.preventDefault(); submitting = true; document.getElementById('fields').disabled = true;
-      connection.textContent = 'Checking your appz folder and VoipAppz login…';
+      connection.textContent = 'Signing in and checking your appz folder…';
       try {
         await invoke('onboarding_start', {appRepo: '', ...apiFields()});
         document.getElementById('api-password').value = '';
@@ -120,11 +120,9 @@
       finally { submitting = false; }
     };
     function showLogin() {
-      const { email, password } = apiFields();
-      const typed = Boolean(email && password);
       const state = document.getElementById('login-state');
-      state.classList.toggle('set', typed);
-      state.textContent = typed ? '✓ Login set' : 'Login not set';
+      state.classList.remove('set');
+      state.textContent = 'Not signed in';
     }
     document.getElementById('api-email').oninput = showLogin;
     document.getElementById('api-password').oninput = showLogin;
@@ -165,7 +163,7 @@
       try {
         const state = await invoke('startup_progress');
         document.getElementById('fields').disabled = submitting || state.status === 'working';
-        document.getElementById('heading').textContent = state.status === 'configure' ? 'Connect your appz and VoipAppz' : state.status === 'failed' ? 'Setup needs attention' : state.status === 'ready' ? 'Builder is ready' : 'Setting up Builder';
+        document.getElementById('heading').textContent = state.status === 'configure' ? 'Sign in to VoipAppz' : state.status === 'failed' ? 'Setup needs attention' : state.status === 'ready' ? 'Builder is ready' : 'Setting up Builder';
         document.getElementById('status').textContent = state.status === 'working' ? 'Step ' + (Math.max(0, state.steps.findIndex(([id]) => id === state.step)) + 1) + ' of ' + state.steps.length : (state.lines.at(-1) || 'Starting…');
         renderWizard(state);
         document.getElementById('actions').hidden = state.status !== 'failed';

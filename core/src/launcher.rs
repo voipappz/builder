@@ -497,8 +497,10 @@ pub async fn check_api_connection(api_url: &str, email: &str, password: &str) ->
     }
     if !email.is_empty() || !password.is_empty() {
         let basic = api_credential(email, password)?;
-        api_mcp_server(api_url, Some(&basic)).await?;
-        return Ok("Connected. Your API tools are available read-only. Sign in separately in the app previews.".into());
+        api_mcp_server(api_url, Some(&basic)).await.map_err(|why| {
+            if why.contains("401") || why.contains("403") { "Wrong email or password for this VoipAppz address.".to_string() } else { why }
+        })?;
+        return Ok(format!("Signed in as {}", email.trim()));
     }
     let response = reqwest::Client::builder().timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none()).build().map_err(|e| e.to_string())?

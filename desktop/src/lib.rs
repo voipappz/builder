@@ -55,6 +55,9 @@ async fn onboarding_check(api_url: String, api_dir: String, email: String, passw
 async fn onboarding_start(app: AppHandle, app_repo: String, api_url: String, api_dir: String, bot_dir: String, email: String, password: String) -> Result<(), String> {
     let settings = launcher::onboarding_settings(Settings::load()?, &app_repo, &api_url, &api_dir, &bot_dir)?;
     let url = settings.api_url.clone().ok_or("Choose an API address.")?;
+    if launcher::appz_only(&settings) && (email.trim().is_empty() || password.is_empty()) {
+        return Err("Sign in with your VoipAppz account: enter your email and password.".into());
+    }
     launcher::check_api_connection(&url, &email, &password).await?;
     let login = if email.is_empty() && password.is_empty() { None } else {
         launcher::api_credential(&email, &password)?;
@@ -305,6 +308,11 @@ async fn restart(app: AppHandle) {
     }
     let login = state.api_login.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
         .filter(|(url, _)| settings.api_url.as_ref() == Some(url)).map(|(_, login)| login.clone());
+    // The login is never saved: after a restart of Builder, sign in again.
+    if launcher::appz_only(&settings) && login.is_none() {
+        progress(&app, "Sign in with your VoipAppz account to start.", "configure");
+        return;
+    }
     match launcher::start_with_api_credential(&settings, login, |line| progress(&app, line, "working")).await {
         Ok(started) => {
             info!("Builder is running; {}", started.api_note);
