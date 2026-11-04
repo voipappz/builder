@@ -1,7 +1,29 @@
 # The appz process: from the mothership to a customer's app
 
 How VoipAppz ships a custom app ("appz") per customer, and how Builder is the
-place it gets built. Decided 2026-11-01 to 2026-11-03; status as of 2026-11-03.
+place it gets built. Decided 2026-11-01 to 2026-11-04; status as of 2026-11-04.
+
+## In three facts (2026-11-04)
+
+1. **Each customer gets its own application** (mobile and desktop).
+2. **Its screens are our existing React** (voipappz/app: phone, conversations
+   and the rest), reused, not rewritten.
+3. **Its logic is an Elixir app (Connectix) deployed per customer**: custom
+   logic, agents, tools, flows. Elixir renders the React screens through
+   [live_react](https://github.com/mrdotb/live_react).
+
+```
+Customer X's app (PWA, mobile and desktop)
+  React screens from voipappz/app (pure components)
+        │ live_react
+Customer X's Elixir (Connectix, Kamal)   custom logic, agents
+        │ API / MCP
+VoipAppz mothership (voipappz-api + switch)   users, ACLs, calls, data
+
+Builder: where X's Elixir is edited (chat, preview, tests, deploy)
+```
+
+Keep it simple: every proposal is checked against these three facts.
 
 ## The parts
 
@@ -36,9 +58,28 @@ Chrome extension's Angular upgrade, an Angular MCP.
 - **Shared screens are fixed in the React app repo** (`@voipappz/conversations-ui`).
 - **Releases ship together** (app, Connectix, Builder). Voice comes later.
 
-Open: the Zendesk-session decision that defines the mothership data API;
-a customer-safe Builder (no code evaluation or SQL against the mothership);
-Builder without a local React app (the app build must serve Builder's client).
+## Decisions (2026-11-04)
+
+- **The customer app is React** (shell included). Connectix's Ionic/Angular
+  phone retires over time; its Angular conversations screen is replaced by
+  `@voipappz/conversations-ui`.
+- **Screens are live_react pages:** Elixir renders each screen (LiveView);
+  the React components stay pure (props in, callbacks out). One data layer.
+- **PWA first,** served by the customer's Elixir; app-store wrappers later.
+- **Builder edits only the Elixir code.** No local React app, worktree or
+  `make dev` for it; the platform is `switch.voipappz.io`. Builder's own chat
+  ships inside the installer (built from the app repo in Builder's release CI).
+- **Milestone 1:** Builder works again (chat inside Builder), then one demo
+  customer app: phone plus conversations, React through live_react, from its
+  Elixir.
+- Reference for "a customer app with tabs": Acrobits' web tab views
+  (<https://acrobits.net/blog/use-cases/use-cases-web-tab-views-feature/>).
+
+Open: where conversations data lives (Connectix's Mnesia today, the
+mothership by the 2026-11-03 decision; the Zendesk-session decision);
+which phone the customer app uses (the React app's sip.js phone or
+Connectix's WebRTC bridge); a customer-safe Builder (no code evaluation or
+SQL against the mothership).
 
 ## What an appz is
 
@@ -100,22 +141,33 @@ identity for `/api/mcp`.
 
 | Piece | Where | State |
 |---|---|---|
-| Builder: product folders, dev MCPs, Status-tab actions, desktop wording | builder main, **v0.1.17 released** | done |
-| Connectix: `builder.toml`, `make setup` / `builder-stop` / `PORT`, `/voipappz/mcp` | connectix PR #2 | CI green, open |
-| Connectix: conversations via live_react, `ChatSession` shared with the channel | connectix PR #3 | CI green, open |
-| `@voipappz/conversations-ui` + chat-ui 0.2 | app PR #299 | CI green, open |
-| Builder page: Product tab, action buttons | app PR #298 | CI green, open |
+| Builder: product folders, dev MCPs, Status-tab actions, desktop wording | builder v0.1.17 | released |
+| Builder: actions in the background; unused upstream code removed (~7,000 lines) | builder **v0.1.18** | released |
+| Connectix: `builder.toml`, `make setup` / `builder-stop` / `PORT`, `/voipappz/mcp` | connectix #2 | merged |
+| Connectix: conversations via live_react, `ChatSession` shared with the channel | connectix #3 | merged; v0.1.25 tag pending |
+| `@voipappz/conversations-ui` + chat-ui 0.2 | app #299 | merged |
+| Builder page: Product tab, action buttons; Status tab follows actions | app #298, #300 | merged |
+| Builder chat inside the installer; Builder without a local app | — | in progress (the chat fails to open when no local app runs) |
 | API dev MCP at `/voipappz/mcp` | api #206 | merged |
 | App dev MCP at `/voipappz/mcp`; Bot tab | app #295, #297, #285 | merged |
 | appz template, `appz.toml`, registration, token exchange, appz → `/api/mcp` tools | — | not started |
 
 ## Roadmap
 
-- **P0** Merge the four open PRs.
-- **P1** The appz template repo (`appz.toml`, `builder.toml`, Kamal files) and an "Open appz" iframe tab in the admin, for one hand-made customer.
-- **P2** Token exchange (API → Connectix) and registration rows; the bot row stores the appz URL.
-- **P3** Connectix tools that call `/api/mcp` with the appz identity; node events into the appz.
-- **P4** `appz new` in Builder; the first customer appz deployed from the Deploy button.
+- **M1a — Builder works again.** Chat shipped inside Builder; the agent's
+  folder is the Connectix appz only; MCPs: `voipappz-product` and
+  `switch.voipappz.io/api/mcp`; onboarding: agent, appz folder, login.
+- **M1b — One demo customer app.** A PWA served by that customer's Elixir:
+  phone plus conversations, React screens through live_react. Fill the
+  `conversations-ui` gaps the Ionic chat covers (charts, thinking and notice
+  messages, debug, wake, offline, prompts, Hebrew/RTL, narrow layout), then
+  delete the Angular chat.
+- **M2** The appz template (`appz.toml`, `builder.toml`, Kamal), login through
+  the mothership, registration rows.
+- **M3** More screens as tabs (configured per customer); Connectix tools on
+  `/api/mcp` with the appz identity.
+- **Later** A phone ↔ tab bridge (dial, call state) for our own tabs; app-store
+  wrappers; customer tabs built in Builder; conversations data in the mothership.
 
 Reviews so far: Codex (bot core, research, Ruby-brain plan, Connectix as
 brain, the Bot tab) and Claude code reviews of the Builder changes; all
