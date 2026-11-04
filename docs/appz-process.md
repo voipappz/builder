@@ -75,11 +75,31 @@ Chrome extension's Angular upgrade, an Angular MCP.
 - Reference for "a customer app with tabs": Acrobits' web tab views
   (<https://acrobits.net/blog/use-cases/use-cases-web-tab-views-feature/>).
 
-Open: where conversations data lives (Connectix's Mnesia today, the
-mothership by the 2026-11-03 decision; the Zendesk-session decision);
-which phone the customer app uses (the React app's sip.js phone or
-Connectix's WebRTC bridge); a customer-safe Builder (no code evaluation or
-SQL against the mothership).
+Answered the same day:
+
+- **Phone:** the React app's sip.js phone (`PhoneScreen`, `useSipPhone`),
+  registered straight to the switch. Elixir stays out of the media path.
+- **Conversations data: the mothership's Postgres is the record**, and
+  Connectix's Mnesia is only the live copy. Connectix `main` (`8f60640`,
+  `Connectix.Mothership`, Broadway over gnat) sends every chat message
+  (`chat.request.message.receive`) and call event
+  (`chat.request.event.receive`) and reads transcripts back
+  (`chat.request.event.list`). voipappz-api records them on queue group
+  `connectix_workers` (branch `feat/connectix-nats-intake`, `db6980f`, not
+  merged yet). DuckDB and the embedded llm_proxy are gone.
+- **The appz's identity:** each payload carries the appz's account JWT
+  (`MOTHERSHIP_ACCOUNT_TOKEN`) and `MOTHERSHIP_ENVIRONMENT_UUID`; the API
+  checks that the environment belongs to that account.
+- **End-user login:** through the mothership (`switch.voipappz.io`); the
+  customer's Elixir keeps no users of its own. M1b mocks it behind one
+  Elixir module (token in, user and ACLs out); the real one can reuse the
+  same account-JWT check over NATS.
+- **Demo customer:** a real VoipAppz user account on `switch.voipappz.io`
+  (credentials are never stored in a repo or a doc).
+
+Open: the NATS login design (subjects, token shape, where the Elixir side
+lives); a customer-safe Builder (no code evaluation or SQL against the
+mothership).
 
 ## What an appz is
 
@@ -147,7 +167,7 @@ identity for `/api/mcp`.
 | Connectix: conversations via live_react, `ChatSession` shared with the channel | connectix #3 | merged; v0.1.25 tag pending |
 | `@voipappz/conversations-ui` + chat-ui 0.2 | app #299 | merged |
 | Builder page: Product tab, action buttons; Status tab follows actions | app #298, #300 | merged |
-| Builder chat inside the installer; Builder without a local app | — | in progress (the chat fails to open when no local app runs) |
+| Builder chat inside the installer; appz-only mode; onboarding = appz folder + VoipAppz login | builder #1, app #301 | in review (verified on Linux end to end; Windows installer in CI) |
 | API dev MCP at `/voipappz/mcp` | api #206 | merged |
 | App dev MCP at `/voipappz/mcp`; Bot tab | app #295, #297, #285 | merged |
 | appz template, `appz.toml`, registration, token exchange, appz → `/api/mcp` tools | — | not started |
@@ -159,7 +179,7 @@ identity for `/api/mcp`.
   `switch.voipappz.io/api/mcp`; onboarding: agent, appz folder, login.
 - **M1b — One demo customer app.** A PWA served by that customer's Elixir:
   phone plus conversations, React screens through live_react. Fill the
-  `conversations-ui` gaps the Ionic chat covers (charts, thinking and notice
+  `conversations-ui` gaps the Ionic chat covers (thinking and notice
   messages, debug, wake, offline, prompts, Hebrew/RTL, narrow layout), then
   delete the Angular chat.
 - **M2** The appz template (`appz.toml`, `builder.toml`, Kamal), login through

@@ -10,7 +10,7 @@ struct Cli {
     /// The app repository (../app). Builder works in its own git worktree of
     /// it (<app-repo>-builder, branch builder/work from origin/main),
     /// created on first start.
-    #[arg(long, required_unless_present = "workspace")]
+    #[arg(long, required_unless_present_any = ["workspace", "bot_dir"])]
     app_repo: Option<PathBuf>,
 
     /// Work in this checkout instead of Builder's own worktree.

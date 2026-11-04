@@ -85,8 +85,15 @@ impl Check {
 /// The WSL distro an app folder lives in, if it is under `\\wsl.localhost`.
 /// On Windows, Builder then runs git, the app's Makefile and the agent there.
 pub fn wsl_distro(settings: &Settings) -> Option<String> {
-    let repo = settings.app_repo.as_deref().or(settings.workspace.as_deref())?;
+    let repo = settings.app_repo.as_deref().or(settings.workspace.as_deref()).or(settings.bot_dir.as_deref())?;
     crate::wsl::location(&repo.to_string_lossy()).map(|(distro, _)| distro)
+}
+
+/// Builder on the customer's appz only (2026-11-04): no app folder, so no
+/// app worktree, setup, dev server or previews; the agent works in the appz
+/// folder and the chat is the copy built into Builder.
+pub fn appz_only(settings: &Settings) -> bool {
+    settings.app_repo.is_none() && settings.workspace.is_none() && settings.bot_dir.is_some()
 }
 
 /// `path` as the commands see it: the Linux path inside the distro, or as is.
@@ -199,7 +206,9 @@ pub async fn preflight(settings: &Settings, env: &HashMap<String, String>) -> Ve
     let cwd = std::env::temp_dir();
     let found = |tool: &str| which::which_in(tool, path.as_ref(), &cwd).is_ok();
 
-    let repo = settings.app_repo.as_deref().or(settings.workspace.as_deref());
+    let appz = appz_only(settings);
+    let repo = settings.app_repo.as_deref().or(settings.workspace.as_deref())
+        .or(if appz { settings.bot_dir.as_deref() } else { None });
     let distro = wsl_distro(settings);
     if let Some(distro) = &distro {
         // Builder's own PATH: `env` is the distro's environment here.
@@ -210,6 +219,10 @@ pub async fn preflight(settings: &Settings, env: &HashMap<String, String>) -> Ve
         }
     }
     match repo {
+        Some(dir) if appz => match crate::bot::read_spec(dir) {
+            Ok(spec) => checks.push(Check::new("Appz folder", Level::Ok, format!("{} ({})", dir.display(), spec.name))),
+            Err(e) => checks.push(Check::new("Appz folder", Level::Fail, e)),
+        },
         None => checks.push(Check::new("App folder", Level::Fail, "Choose the voipappz/app checkout.")),
         Some(repo) if distro.is_none() && (is_network_path(&repo.to_string_lossy()) || repo.to_string_lossy().starts_with(r"\\?\UNC")) =>
             checks.push(Check::new("App folder", Level::Fail, format!("{} is on a network share; choose a local or WSL checkout.", repo.display()))),
@@ -234,7 +247,12 @@ pub async fn preflight(settings: &Settings, env: &HashMap<String, String>) -> Ve
             Check::new("WSL version", Level::Fail, format!("{d} runs on WSL1 ({kernel}); Builder needs WSL2. In PowerShell: wsl --set-version {d} 2"))
         });
     }
-    for (tool, why) in [("git", "Builder makes its working copy with git"), ("make", "Builder runs the app with its Makefile"), ("bash", "the app's Makefile needs bash"), ("curl", "the app's Makefile needs curl")] {
+    let tools: &[(&str, &str)] = if appz {
+        &[("make", "Builder runs the appz with its Makefile"), ("bash", "the appz's Makefile needs bash")]
+    } else {
+        &[("git", "Builder makes its working copy with git"), ("make", "Builder runs the app with its Makefile"), ("bash", "the app's Makefile needs bash"), ("curl", "the app's Makefile needs curl")]
+    };
+    for &(tool, why) in tools {
         let present = match (&distro, &in_distro) {
             (Some(_), Some(tools)) => tools.iter().any(|t| t == tool),
             (Some(_), None) => false,
@@ -256,7 +274,7 @@ pub async fn preflight(settings: &Settings, env: &HashMap<String, String>) -> Ve
     // login and no TTY it stops. A login saved in .env is in `env` already
     // (add_saved_login).
     let setup_due = planned_workspace(settings).is_none_or(|w| !w.join(SETUP_DONE).is_file());
-    if repo.is_some() && (settings.start_app || setup_due) {
+    if !appz && repo.is_some() && (settings.start_app || setup_due) {
         let set = |key: &str| env.get(key).is_some_and(|v| !v.is_empty());
         if set("TEST_EMAIL") && set("TEST_PASSWORD") {
             checks.push(Check::new("API login", Level::Ok, "set"));
@@ -282,6 +300,7 @@ pub async fn preflight(settings: &Settings, env: &HashMap<String, String>) -> Ve
 
     let wanted = url_port(&settings.client_url).unwrap_or(3000);
     match free_port(wanted).await {
+        _ if appz => {}
         Some(port) if port == wanted => checks.push(Check::new("App port", Level::Ok, format!("{port} is free"))),
         Some(port) => checks.push(Check::new("App port", Level::Warn, format!("{wanted} is taken (another app, or WSL); the app will use {port}"))),
         None => checks.push(Check::new("App port", Level::Fail, format!("no free port between {wanted} and {}", wanted + 19))),
@@ -296,7 +315,7 @@ pub async fn preflight(settings: &Settings, env: &HashMap<String, String>) -> Ve
         let reachable = reqwest::Client::builder().timeout(Duration::from_secs(8)).build().ok();
         let answer = match reachable { Some(c) => c.get(api).send().await.is_ok(), None => false };
         checks.push(if answer { Check::new("API", Level::Ok, format!("{api} answers")) }
-            else { Check::new("API", Level::Warn, format!("{api} does not answer; the previews will not sign in")) });
+            else { Check::new("API", Level::Warn, format!("{api} does not answer; the agent's API tools will be off")) });
     }
     checks
 }
@@ -478,8 +497,10 @@ pub async fn check_api_connection(api_url: &str, email: &str, password: &str) ->
     }
     if !email.is_empty() || !password.is_empty() {
         let basic = api_credential(email, password)?;
-        api_mcp_server(api_url, Some(&basic)).await?;
-        return Ok("Connected. Your API tools are available read-only. Sign in separately in the app previews.".into());
+        api_mcp_server(api_url, Some(&basic)).await.map_err(|why| {
+            if why.contains("401") || why.contains("403") { "Wrong email or password for this VoipAppz address.".to_string() } else { why }
+        })?;
+        return Ok(format!("Signed in as {}", email.trim()));
     }
     let response = reqwest::Client::builder().timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none()).build().map_err(|e| e.to_string())?
@@ -516,6 +537,19 @@ pub fn is_network_path(path: &str) -> bool {
 }
 
 pub fn onboarding_settings(mut settings: Settings, app_repo: &str, api_url: &str, api_dir: &str, bot_dir: &str) -> Result<Settings, String> {
+    let api_dir_path = (!api_dir.trim().is_empty()).then(|| PathBuf::from(api_dir.trim()));
+    if app_repo.trim().is_empty() {
+        // The appz only: its folder is the workspace.
+        if bot_dir.trim().is_empty() {
+            return Err("Choose your appz folder (the Connectix folder with builder.toml).".into());
+        }
+        settings.api_url = Some(onboarding_api_url(api_url, api_dir_path.as_deref())?);
+        settings.api_dir = api_dir_path;
+        settings.app_repo = None;
+        settings.workspace = None;
+        settings.bot_dir = onboarding_bot_dir("", bot_dir)?;
+        return Ok(settings);
+    }
     if is_network_path(app_repo) && crate::wsl::location(app_repo).is_none() {
         return Err("This folder is on a network share. Choose a checkout on a local drive or inside WSL (\\\\wsl.localhost\\<distro>\\…).".into());
     }
@@ -544,12 +578,13 @@ fn onboarding_bot_dir(app_repo: &str, bot_dir: &str) -> Result<Option<PathBuf>, 
         return Ok(None);
     }
     let app_distro = crate::wsl::location(app_repo).map(|(distro, _)| distro);
-    if crate::wsl::location(bot_dir).map(|(distro, _)| distro) != app_distro {
+    if !app_repo.trim().is_empty() && crate::wsl::location(bot_dir).map(|(distro, _)| distro) != app_distro {
         return Err("Choose a voice bot folder on the same system as the app (the same WSL distro).".into());
     }
     let dir = PathBuf::from(bot_dir);
     crate::bot::read_spec(&dir)?;
-    Ok(Some(if app_distro.is_some() { dir } else { dunce::canonicalize(dir).map_err(|e| e.to_string())? }))
+    let in_wsl = crate::wsl::location(bot_dir).is_some();
+    Ok(Some(if in_wsl { dir } else { dunce::canonicalize(dir).map_err(|e| e.to_string())? }))
 }
 
 pub fn onboarding_api_url(api_url: &str, api_dir: Option<&Path>) -> Result<String, String> {
@@ -914,11 +949,15 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
         None => None,
     };
 
-    let workspace = ensure_workspace(settings, &env, &progress).await?;
+    let appz = appz_only(settings);
+    let workspace = match (&settings.bot_dir, appz) {
+        (Some(dir), true) => dir.clone(),
+        _ => ensure_workspace(settings, &env, &progress).await?,
+    };
 
     // The app's API proxy uses the same API as the agent. Written once; an
     // existing .env is never changed.
-    if let Some(api) = &api_url {
+    if let (Some(api), false) = (&api_url, appz) {
         let dotenv = workspace.join(".env");
         if !dotenv.exists() {
             let _ = std::fs::write(&dotenv, format!("VITE_API_BASE_URL={}\n", api));
@@ -934,11 +973,15 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
 
     let mut dev_server = None;
     progress("@step app");
-    let app_answers = settings.start_app && answers(&client_url).await;
+    let start_app = settings.start_app && !appz;
+    let app_answers = start_app && answers(&client_url).await;
     if app_answers {
         progress(&format!("An app already answers at {client_url}; using it. If that is not this workspace's dev server (for example one running in WSL), stop it and restart Builder."));
     }
-    if settings.start_app && !app_answers {
+    if appz {
+        progress("No local app: the chat is built into Builder.");
+    }
+    if start_app && !app_answers {
         let wanted = url_port(&client_url).unwrap_or(3000);
         let port = free_port(wanted).await.ok_or_else(|| format!("No free port between {wanted} and {} for the app dev server.", wanted + 19))?;
         if port != wanted {
@@ -1034,7 +1077,7 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
     // packages, where Node and the agent are installed.
     let agent_dir = settings.bot_dir.clone().unwrap_or_else(|| workspace.clone());
     let mut agent = agent_command(&settings.agent_command, &workspace);
-    if settings.bot_dir.is_some() {
+    if settings.bot_dir.is_some() && !appz {
         agent = agent_from(&command_path(&workspace, distro.as_deref()), &agent, distro.is_none() && cfg!(windows));
     }
     // The app's only when Builder started its dev server: an app that already
@@ -1066,7 +1109,8 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
         mcp_servers: dev_mcps,
         api_mcp,
         api_url,
-        preview_url,
+        // The Admin and User previews show the local app; none without one.
+        preview_url: (!appz).then_some(preview_url),
         bot: bot.clone(),
     };
     let url = format!("http://127.0.0.1:{}/?secret={}", config.port, config.secret);
