@@ -168,13 +168,64 @@ identity for `/api/mcp`.
 | `@voipappz/conversations-ui` + chat-ui 0.2 | app #299 | merged |
 | Builder page: Product tab, action buttons; Status tab follows actions | app #298, #300 | merged |
 | Builder chat inside the installer; appz-only mode; onboarding = sign in with your VoipAppz account, then the appz folder | builder **v0.1.19** (#1), app #301 | released (verified on Linux end to end; not yet run on Windows) |
+| Tray and setup-window wording for the appz | builder **v0.1.20** (#2) | released |
+| CI: appz end to end (`scripts/e2e-appz.sh`, job `e2e-appz`) | builder #3 | open; passes locally, CI waits for connectix #4 |
+| Connectix: `make setup` builds the operator pages' assets (`make admin-ui`) | connectix #4 | open (found by the appz CI) |
 | API dev MCP at `/voipappz/mcp` | api #206 | merged |
 | App dev MCP at `/voipappz/mcp`; Bot tab | app #295, #297, #285 | merged |
 | appz template, `appz.toml`, registration, token exchange, appz → `/api/mcp` tools | — | not started |
 
+## Session log (2026-11-04/05)
+
+What was built, in order:
+
+1. **The chat ships inside Builder.** voipappz/app `npm run build:builder`
+   (app #301) writes one `client.js` + `client.css`; Builder pins the app ref
+   in `client.ref`, `scripts/client.sh` builds it into `client/`,
+   `core/build.rs` embeds it, and Builder serves it at `/builder/*` (public
+   static files: Host-checked, no secret). Nothing on port 3000 is needed.
+2. **Appz-only mode** (`launcher::appz_only`): with only an appz folder
+   (`builder.toml`), Builder skips the app worktree, the app's `make setup`
+   and `make dev`, the app login and the Admin/User previews; the agent runs
+   with `npx` in the appz folder. The old app path is still in the code.
+3. **Onboarding:** step 1 sign in with your VoipAppz account (switch.voipappz.io,
+   checked against `/api/mcp`; 401 = wrong email or password; kept in memory
+   only, so you sign in again after a restart), step 2 the appz folder.
+4. **Releases:** v0.1.19 (the above), v0.1.20 (tray and setup wording).
+5. **CI for the appz path:** `scripts/e2e-appz.sh` clones connectix-io/connectix
+   (read-only deploy key `voipappz/builder CI`, secret `CONNECTIX_DEPLOY_KEY`),
+   starts Builder with only that folder, waits for Connectix in Docker, and
+   checks in Chromium (`scripts/e2e-appz-page.cjs`): the chat renders from
+   `/builder/client.js`, no previews, Status tab, the appz tab shows its
+   conversations page, no page errors; then ACP initialize. Screenshot is a
+   CI artifact.
+6. **The CI found a Connectix bug:** a fresh clone's `/admin/conversations`
+   was bare text, because `make setup` never built the live_react assets.
+   Fixed in connectix #4 (`make admin-ui`, Docker-only build).
+
+Decisions recorded the same day: the React sip.js phone; conversations in
+the mothership's Postgres over NATS (Mnesia = live copy); end-user login
+mocked for M1b behind one Elixir module; the demo uses a real VoipAppz
+account (credentials never stored).
+
+Open after this session:
+
+- Merge connectix #4, then re-run builder #3 (its `e2e-appz` clones
+  Connectix `main`) and merge it.
+- The old app-path `e2e` job fails at the app's login: the API in the
+  `VITE_API_BASE_URL` secret refuses connections (ECONNREFUSED). Not a
+  Builder failure; that test API needs to be up, or the job retired with the
+  app path.
+- voipappz-api #209 (the NATS intake) was closed without merging; Connectix
+  `main` already sends to it.
+- Delete the old app-centric path from Builder; Connectix v0.1.25 tag; first
+  run of v0.1.20 on Windows.
+- M1b: package the React sip.js phone (`@voipappz/phone-ui`) like
+  conversations-ui, then the demo customer PWA.
+
 ## Roadmap
 
-- **M1a — Builder works again.** Chat shipped inside Builder; the agent's
+- **M1a — Builder works again (done: v0.1.19/v0.1.20).** Chat shipped inside Builder; the agent's
   folder is the Connectix appz only; MCPs: `voipappz-product` and
   `switch.voipappz.io/api/mcp`; onboarding: agent, appz folder, login.
 - **M1b — One demo customer app.** A PWA served by that customer's Elixir:
