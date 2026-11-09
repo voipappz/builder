@@ -43,8 +43,22 @@ jobs:
 
       # The chat client, built from voipappz/app at client.ref and embedded
       # by core/build.rs, so the installer needs no running app.
+      # voipappz/app is private: a read-only deploy key (secret APP_DEPLOY_KEY)
+      # behind the SSH alias github.com-app, so it never collides with another
+      # repository's key on the same host.
+      - name: voipappz/app deploy key
+        shell: bash
+        env:
+          KEY: ${{ secrets.APP_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/voipappz-app && chmod 600 ~/.ssh/voipappz-app
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          printf 'Host github.com-app\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/voipappz-app\n  IdentitiesOnly yes\n' >> ~/.ssh/config
       - name: Build the chat client
         shell: bash
+        env:
+          APP_REPO: git@github.com-app:voipappz/app.git
         run: scripts/client.sh
 
       - name: Verify Windows startup
@@ -94,7 +108,21 @@ jobs:
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev librsvg2-dev libssl-dev patchelf file
 
+      # voipappz/app is private: a read-only deploy key (secret APP_DEPLOY_KEY)
+      # behind the SSH alias github.com-app, so it never collides with another
+      # repository's key on the same host.
+      - name: voipappz/app deploy key
+        shell: bash
+        env:
+          KEY: ${{ secrets.APP_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/voipappz-app && chmod 600 ~/.ssh/voipappz-app
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          printf 'Host github.com-app\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/voipappz-app\n  IdentitiesOnly yes\n' >> ~/.ssh/config
       - name: Build the chat client
+        env:
+          APP_REPO: git@github.com-app:voipappz/app.git
         run: scripts/client.sh
 
       - name: Build
