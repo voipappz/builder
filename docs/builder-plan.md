@@ -48,7 +48,7 @@ first.
 
 | Control | What it does | Today (folder make targets, via `[[actions]]`) | Target (mothership deploy API) |
 |---|---|---|---|
-| Environments | dev and prod, which one is selected, its URL and health | `url` + health of the remote appz | The mothership lists the customer's instances |
+| Environments | dev and prod, each a Kamal destination with its own subdomain (`acme-dev.voipappz.io`, `acme.voipappz.io`), which one is selected, its URL and health | `url` + health of the remote appz | The mothership lists the customer's destinations |
 | Deploy | Build and ship the current folder to the selected environment; shows the build log live; confirm first | **Kamal**, driven by Builder: `make deploy DEST=…` runs Kamal in its own Docker image (no Ruby on the machine) with `config/deploy.yml` from the folder, builds the image, pushes it to the registry and swaps the container on the server; exists in Connectix for VoipAppz engineers | The same Kamal, run by the mothership's fleet on "deploy appz for customer C to prod"; the customer holds no registry, host or SSH credentials |
 | Status | What runs where: version, started at, health, containers kept | `make deploy-status` | Mothership status endpoint |
 | Versions and rollback | The versions kept on the server; one click rolls back, with confirm | `make rollback` / `make deploy-version` | Mothership rollback endpoint |

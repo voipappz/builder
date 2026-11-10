@@ -28,6 +28,19 @@ errors back to Builder.
 **Data lives in the mothership** (voipappz-api): users, ACLs, calls, numbers,
 records, billing. The appz keeps live state only. No database in an appz.
 
+**Deployment unit, decided 2026-11-10:** one Docker container per customer,
+deployed with Kamal, reachable at the customer's own subdomain
+(`<customer>.voipappz.io`) through kamal-proxy, which routes by host and
+terminates TLS. Dev and prod are two destinations (`<customer>-dev.…`,
+`<customer>.…`). Pooled multi-tenant engine workers are an H3 idea, not now.
+What this needs: wildcard DNS `*.voipappz.io` to the fleet host(s); one
+Kamal destination per customer and environment generated from a template
+(service name, host, env file); distinct SIP and RTP ports per container on
+a shared host (`CONNECTIX_SIP_BIND_PORT` and the RTP range per customer, or
+one host per customer); the registry login, SSH key and secrets held by the
+mothership's fleet, never by the customer. Builder's remote-appz allowlist
+(`*.voipappz.io`) already matches this naming.
+
 ## 2. How a customer screen is built
 
 A screen is a LiveView page. Logic and data are Elixir; React only draws.
