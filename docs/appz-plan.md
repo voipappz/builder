@@ -28,6 +28,16 @@ errors back to Builder.
 **Data lives in the mothership** (voipappz-api): users, ACLs, calls, numbers,
 records, billing. The appz keeps live state only. No database in an appz.
 
+**Said as a customer hears it (owner, 2026-11-10): every customer gets
+their own version of the VoipAppz app.** Their version = their folder plus
+a pinned engine and catalog tag, never a copy of the engine's code, so it is
+theirs to change and yours to upgrade. Two obligations follow: (1) a
+customer's appz has visible versions (number, changelog written by the
+agent, diff between versions, promote and roll back in Builder); (2) the
+seams a customer builds on (flow nodes, skills, LiveView helpers, widget
+props) carry a version and a deprecation rule, so a new engine tag never
+silently breaks a customer's version.
+
 **Deployment unit, decided 2026-11-10:** one Docker container per customer,
 deployed with Kamal, reachable at the customer's own subdomain
 (`<customer>.voipappz.io`) through kamal-proxy, which routes by host and
