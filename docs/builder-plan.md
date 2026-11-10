@@ -70,6 +70,10 @@ customer they never leave the mothership.
 
 ## Rules that hold across releases
 
+- "Connectix" is the internal name of the Elixir engine. Customers never
+  see it: not in Builder's pages, onboarding, the Deploy tab, subdomains or
+  product names. They see "your appz" and VoipAppz.
+
 - The agent edits only the customer folder; API tools stay read-only;
   logins never reach the agent's environment.
 - Every outward action (push to a customer repo, deploy, provisioning)
