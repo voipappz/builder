@@ -33,9 +33,31 @@ install Builder → sign in → New appz → the agent builds (Elixir in the fol
 | v0.1.23 | **Push to the dev instance**: Run = commit and push the folder to the customer's repo; Builder shows the instance's reload result and compile errors in the Status tab | Connectix extension loader (appz plan step 6); a dev instance per customer | Save → page updated in under five seconds |
 | v0.1.23 | **Token from the mothership**: the Bot bridge and the page get the instance's token through the signed-in account, not from a local `.env` | Mothership endpoint: appz of this customer, its url and token | A customer never sees a token |
 | v0.1.24 | **New appz**: clone the template from GitHub, name it, register it with the mothership, open it; the template ships three samples (a live screen, a custom call flow, a report) and an AGENTS.md | Template repo; mothership "create appz" (provisioning of the dev instance) | A fresh account reaches a running appz in minutes |
-| v0.1.24 | **Deploy**: the Deploy action becomes a mothership call that promotes dev to prod, with confirm | Mothership deploy API; fleet runs Kamal | Customer one live on a number from Builder |
+| v0.1.23 | **Deploy tab, the full tool** (see below): environments, deploy with confirm, status, versions and rollback, logs, number routing | Today: the folder's own make targets (Connectix has deploy, deploy-status, rollback, deploy-logs, deploy-version via Kamal). Later: the same through the mothership's deploy API | A customer deploys, watches, and rolls back without a terminal |
 | v0.1.25 | **Agent guard rails and reference**: the catalog README and the appz contract as the agent's reference; refuse edits outside the customer folder; the agent login choice (bring your own or bundled) | Decision on the agent's login and pricing | The agent proposes Elixir and catalog widgets, never React |
 | later | Status: live call log from the instance; evals for the bot from the Bot tab; Windows without WSL (nothing to run locally in the cloud model, so this falls out) | Instance events feed | |
+
+## The Deploy tab: Builder provides the whole deploy tool
+
+A customer never opens a terminal or a cloud console. Everything about
+running their appz is in Builder, in one tab, and every outward step asks
+first.
+
+| Control | What it does | Today (folder make targets, via `[[actions]]`) | Target (mothership deploy API) |
+|---|---|---|---|
+| Environments | dev and prod, which one is selected, its URL and health | `url` + health of the remote appz | The mothership lists the customer's instances |
+| Deploy | Build and ship the current folder to the selected environment; shows the build log live; confirm first | `make deploy DEST=…` (Kamal, exists in Connectix) | "deploy appz for customer C to prod" — the fleet runs Kamal; the customer holds no registry, host or SSH credentials |
+| Status | What runs where: version, started at, health, containers kept | `make deploy-status` | Mothership status endpoint |
+| Versions and rollback | The versions kept on the server; one click rolls back, with confirm | `make rollback` / `make deploy-version` | Mothership rollback endpoint |
+| Logs | The running instance's log, tailing | `make deploy-logs` | Instance log feed through the mothership |
+| Numbers | Which phone numbers reach this appz; route a number to dev or prod | Read-only today (API tools) | Mothership route endpoint, confirm first |
+| Secrets | Names the appz needs (from `.env.example`) and whether each is set on the environment; values never shown | Not in Builder yet | Mothership secrets endpoint, write-only |
+| Promote | Dev → prod: deploy the version that runs on dev, without rebuilding | — | Mothership promote endpoint |
+
+Rules: one action at a time per folder (exists); a dropped request never
+kills a run (exists); every control that changes something outward asks
+first and acts only inside the signed-in customer; outputs are shown
+without secrets.
 
 ## Rules that hold across releases
 
