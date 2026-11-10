@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Builds Builder's chat client from voipappz/app (public) and puts it in
-# client/, which core/build.rs embeds into the binary.
+# Builds Builder's chat client from voipappz/app (a private repository) and
+# puts it in client/, which core/build.rs embeds into the binary.
 #
 #   scripts/client.sh                # the ref in client.ref
 #   scripts/client.sh <ref>          # a branch, tag or sha
 #   APP_DIR=../app scripts/client.sh # an existing checkout, as it is
+#   APP_REPO=<url> scripts/client.sh # another clone URL (CI uses an SSH
+#                                    # host alias with a read-only deploy key)
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -15,7 +17,7 @@ if [ -n "${APP_DIR:-}" ]; then
 else
   app="$root/.client-app"
   if [ ! -d "$app/.git" ]; then
-    git clone --quiet --filter=blob:none https://github.com/voipappz/app.git "$app"
+    git clone --quiet --filter=blob:none "${APP_REPO:-git@github.com:voipappz/app.git}" "$app"
   fi
   git -C "$app" fetch --quiet origin "$ref"
   git -C "$app" checkout --quiet --detach FETCH_HEAD
