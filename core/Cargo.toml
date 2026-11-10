@@ -14,7 +14,7 @@ dunce = "1"
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 # The bridge to the voice bot's WebSocket.
-bot-ws = { package = "tokio-tungstenite", version = "0.28" }
+bot-ws = { package = "tokio-tungstenite", version = "0.28", features = ["rustls-tls-webpki-roots"] }
 reqwest = { version = "0.12", features = ["stream", "json", "rustls-tls"], default-features = false }
 rustls = "0.23"
 serde = { version = "1", features = ["derive"] }

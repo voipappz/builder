@@ -652,7 +652,8 @@ async fn start_bot(dir: &Path, env: &HashMap<String, String>, distro: Option<Str
     if report_progress(&format!("Running the {noun}'s setup (make setup)"), progress, setup).await? {
         progress(&format!("The {noun} is set up."));
     }
-    progress(&format!("Starting the {noun} (make dev PORT={port})…"));
+    progress(&if bot.remote() { format!("Connecting to the {noun} at {}…", bot.origin()) }
+        else { format!("Starting the {noun} (make dev PORT={port})…") });
     let health = match bot.start(progress).await {
         Ok(health) => health,
         Err(e) => {
@@ -662,6 +663,7 @@ async fn start_bot(dir: &Path, env: &HashMap<String, String>, distro: Option<Str
         }
     };
     progress(&match (health.ready, bot.spec.kind) {
+        (true, _) if bot.remote() => format!("The {noun} answers at {}.", bot.origin()),
         (true, _) => format!("The {noun} answers on port {port}."),
         (false, Kind::Bot) => format!("The bot runs on port {port} but is not ready for calls: put OPENAI_API_KEY in {}.", dir.join(".env").display()),
         (false, Kind::Product) => format!("The product runs on port {port} but its health check says it is not ready; see its log."),
