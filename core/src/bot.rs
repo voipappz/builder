@@ -130,15 +130,29 @@ pub fn read_spec(dir: &Path) -> Result<BotSpec, String> {
         return Err(format!("{}: stop, actions' id and make name make targets, requires names commands (letters, digits, - _ and . in commands)", path.display()));
     }
     if let Some(url) = spec.url.as_mut() {
+        // The folder is the agent's to edit, and the bridge sends the folder's
+        // token to this origin: only VoipAppz hosts over https, or loopback.
         let parsed = reqwest::Url::parse(url).ok()
-            .filter(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some()
-                && u.path() == "/" && u.query().is_none() && u.fragment().is_none());
+            .filter(|u| u.path() == "/" && u.query().is_none() && u.fragment().is_none())
+            .filter(|u| remote_origin_allowed(u.scheme(), u.host_str().unwrap_or_default()));
         match parsed {
             Some(u) => *url = u.origin().ascii_serialization(),
-            None => return Err(format!("{}: url is the appz's origin, http(s)://host[:port], with no path", path.display())),
+            None => return Err(format!("{}: url is the appz's origin with no path: https://<host>.voipappz.io[:port], or http://127.0.0.1:<port> for a local instance", path.display())),
+        }
+        if spec.stop.is_some() || !spec.requires.is_empty() {
+            return Err(format!("{}: a remote appz (url) runs nothing here: drop stop and requires", path.display()));
         }
     }
     Ok(spec)
+}
+
+/// Where a remote appz may be: a VoipAppz host over https, or loopback for an
+/// instance running on this machine. Anything else would carry the folder's
+/// token to a host the agent chose.
+fn remote_origin_allowed(scheme: &str, host: &str) -> bool {
+    let loopback = matches!(host, "127.0.0.1" | "localhost" | "[::1]");
+    let voipappz = host == "voipappz.io" || host.ends_with(".voipappz.io");
+    (scheme == "https" && (voipappz || loopback)) || (scheme == "http" && loopback)
 }
 
 /// The shared token the bot asks of Earshot, from the bot's `.env`, read as
@@ -237,6 +251,9 @@ impl Bot {
 
     /// The folder's dev MCP server, when its builder.toml names one.
     pub fn mcp_url(&self) -> Option<String> {
+        if self.remote() {
+            return None;
+        }
         self.spec.mcp.as_deref().map(|path| self.url(path))
     }
 
@@ -296,7 +313,9 @@ impl Bot {
             Err(_) => return Health { up: false, ready: false },
         };
         match client.get(self.url(&self.spec.health)).send().await {
-            Ok(r) => Health { up: true, ready: r.status().is_success() },
+            // Locally any answer means the process is there; remotely only a
+            // success does, so a wrong path or an unrelated server is not "up".
+            Ok(r) => { let ready = r.status().is_success(); Health { up: ready || !self.remote(), ready } }
             Err(_) => Health { up: false, ready: false },
         }
     }
@@ -639,14 +658,25 @@ mod tests {
         assert!(read_spec(dir.path()).is_ok());
         std::fs::write(dir.path().join("builder.toml"), "[builder]\nkind = \"product\"\nname = \"x\"\nmcp = \"voipappz\"\n").unwrap();
         assert!(read_spec(dir.path()).is_err());
-        // A remote appz: its origin, normalised; a path, query or other scheme is refused.
-        std::fs::write(dir.path().join("builder.toml"),
-            "[builder]\nkind = \"product\"\nname = \"Acme\"\nurl = \"https://cloud.example.com:5100/\"\nsocket = \"/ws/earshot\"\n").unwrap();
-        assert_eq!(read_spec(dir.path()).unwrap().url.as_deref(), Some("https://cloud.example.com:5100"));
-        for bad in ["https://cloud.example.com/app", "https://cloud.example.com/?x=1", "ftp://cloud.example.com", "cloud.example.com"] {
+        // A remote appz: its origin, normalised (a default port dropped, another kept).
+        for (url, origin) in [("https://cloud.voipappz.io:5100/", "https://cloud.voipappz.io:5100"),
+                              ("https://acme.voipappz.io:443", "https://acme.voipappz.io"),
+                              ("http://127.0.0.1:4001", "http://127.0.0.1:4001")] {
+            std::fs::write(dir.path().join("builder.toml"),
+                format!("[builder]\nkind = \"product\"\nname = \"Acme\"\nurl = \"{url}\"\nsocket = \"/ws/earshot\"\n")).unwrap();
+            assert_eq!(read_spec(dir.path()).unwrap().url.as_deref(), Some(origin), "{url}");
+        }
+        // The agent edits this folder and the bridge sends its token to the url:
+        // other hosts, plain http off loopback, a path or query are refused.
+        for bad in ["https://evil.example", "https://voipappz.io.evil.example", "https://notvoipappz.io",
+                    "http://cloud.voipappz.io:5100", "https://cloud.voipappz.io/app", "https://cloud.voipappz.io/?x=1",
+                    "ftp://cloud.voipappz.io", "cloud.voipappz.io"] {
             std::fs::write(dir.path().join("builder.toml"), format!("[builder]\nkind = \"product\"\nname = \"x\"\nurl = \"{bad}\"\n")).unwrap();
             assert!(read_spec(dir.path()).is_err(), "{bad}");
         }
+        // Nothing runs here for a remote appz: stop and requires are refused.
+        std::fs::write(dir.path().join("builder.toml"), "[builder]\nkind = \"product\"\nname = \"x\"\nurl = \"https://a.voipappz.io\"\nstop = \"down\"\n").unwrap();
+        assert!(read_spec(dir.path()).unwrap_err().contains("drop stop and requires"));
         std::fs::write(dir.path().join("builder.toml"),
             "[builder]\nkind = \"bot\"\nname = \"Noa\"\nport = 8091\nsetup_done = \".env\"\n").unwrap();
         std::fs::write(dir.path().join(".env"), "OPENAI_API_KEY=k\nEARSHOT_BOT_TOKEN=\"abc\"\n").unwrap();
@@ -719,18 +749,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".env"), "EARSHOT_BOT_TOKEN=t0ken\n").unwrap();
         std::fs::write(dir.path().join("builder.toml"), format!(
-            "[builder]\nkind = \"product\"\nname = \"Acme\"\nurl = \"http://127.0.0.1:{bot_port}\"\nsocket = \"/earshot\"\nrequires = [\"no-such-tool\"]\nstart_timeout = 5\n")).unwrap();
+            "[builder]\nkind = \"product\"\nname = \"Acme\"\nurl = \"http://127.0.0.1:{bot_port}\"\nsocket = \"/earshot\"\nmcp = \"/mcp\"\nstart_timeout = 2\n")).unwrap();
         let spec = read_spec(dir.path()).unwrap();
         // The local port is unused: the origin is the url.
         let bot = Arc::new(Bot::new(spec, dir.path().to_path_buf(), 1, None, HashMap::new()));
         assert!(bot.remote());
         assert_eq!(bot.origin(), format!("http://127.0.0.1:{bot_port}"));
         assert_eq!(bot.socket_url(), format!("ws://127.0.0.1:{bot_port}/earshot"));
+        assert_eq!(bot.mcp_url(), None, "no local MCP for a remote appz");
         bot.check_requires().await.unwrap();
         assert_eq!(bot.setup_if_needed().await.unwrap(), false, "no make setup for a remote appz");
-        // No Makefile in the folder: start only waits for health (404 there = up, not ready).
-        let health = bot.start(&|_| {}).await.unwrap();
-        assert!(health.up && !health.ready);
+        // No Makefile in the folder: start only waits for health, and remotely
+        // a 404 (the stand-in has no /healthz) is not "up": a wrong path or an
+        // unrelated server must not pass.
+        assert!(bot.start(&|_| {}).await.unwrap_err().contains("did not answer"));
+        let health = bot.health().await;
+        assert!(!health.up && !health.ready);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();

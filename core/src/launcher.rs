@@ -638,8 +638,9 @@ async fn start_bot(dir: &Path, env: &HashMap<String, String>, distro: Option<Str
     -> Result<std::sync::Arc<crate::bot::Bot>, String> {
     let spec = crate::bot::read_spec(dir)?;
     let noun = spec.kind.noun();
-    let port = free_port(spec.port).await
-        .ok_or_else(|| format!("No free port between {} and {} for the {noun}.", spec.port, spec.port + 19))?;
+    // A remote appz (url) runs nothing here: no port to reserve.
+    let port = if spec.url.is_some() { spec.port } else { free_port(spec.port).await
+        .ok_or_else(|| format!("No free port between {} and {} for the {noun}.", spec.port, spec.port + 19))? };
     let env: HashMap<String, String> = env.iter()
         .filter(|(k, _)| !matches!(k.as_str(), "TEST_EMAIL" | "TEST_PASSWORD" | "VA_TEST_OTP" | "VA_MCP_BASIC")
             && !k.starts_with("ANTHROPIC_") && !k.starts_with("CLAUDE_"))
