@@ -1,6 +1,7 @@
 // Opens the Builder page in Chromium and checks what a user sees in appz
 // mode: the built-in chat renders with no page errors, there are no
-// Admin/User previews, and the appz's tab frames its conversations page.
+// Admin/User previews, and the appz's tab frames its first page (the Calls
+// dashboard at /app/dashboard, a LiveView rendering the catalog's React).
 //
 //   node scripts/e2e-appz-page.cjs <builder-url> [screenshot.png]
 //
@@ -27,8 +28,8 @@ const redact = (s) => String(s).replace(/secret=[^&\s]+/g, 'secret=…');
     check(await page.getByRole('tab', { name: 'Admin' }).count() === 0, 'no Admin/User previews');
     check(await page.getByRole('tab', { name: 'Status' }).count() === 1, 'the Status tab is there');
     const frame = page.frameLocator('iframe').first();
-    await frame.getByText('Conversations').first().waitFor({ timeout: 60000 });
-    check(true, "the appz's tab shows its conversations page");
+    await frame.getByText('Recent calls').first().waitFor({ timeout: 60000 });
+    check(true, "the appz's tab shows its Calls dashboard");
     check(errors.length === 0, 'no page errors' + (errors.length ? ':\n  ' + errors.join('\n  ') : ''));
   } catch (e) {
     check(false, redact(e.message));

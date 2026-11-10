@@ -26,8 +26,11 @@ plan is `docs/appz-plan.md`; read it before proposing anything. In short:
   install a toolchain, never see engine code.
 
 Today Builder still runs a local folder (`builder.toml`: `make setup`,
-`make dev PORT=…`, health, `stop`, `[[actions]]`); the cloud dev instance
-and "New appz" are steps 8 and 9 of the plan. **Keep it simple**: check
+`make dev PORT=…`, health, `stop`, `[[actions]]`), and the appz page it
+shows is Connectix's first page, the Calls dashboard at `/app/dashboard`
+(a LiveView rendering `@voipappz/dashboard-ui` through live_react;
+connectix #5, app #309); the cloud dev instance and "New appz" are steps 8
+and 9 of the plan. **Keep it simple**: check
 every proposal against the plan's three layers.
 
 ## Layout
@@ -94,6 +97,7 @@ tag; Installers publishes the release. Check that the tag's run started.
 | Connectix `make setup` builds the admin assets (`make admin-ui`, Docker only), found by e2e-appz | connectix #4 | open |
 | Linux packages (.deb for Ubuntu 22.04+, AppImage) in Installers | builder #4 | open; CI run passed (Linux and Windows) |
 | Decisions: sip.js phone; conversations over NATS to the mothership (Mnesia = live copy); end-user login mocked for M1b; demo on a real VoipAppz account | `docs/appz-process.md` | session log on builder #3's branch |
+| The appz's first page: the Calls dashboard at `/app/dashboard`; Builder's pane and `e2e-appz` show it | connectix #5, app #309, builder (this) | open (2026-11-10) |
 
 ## Open
 
