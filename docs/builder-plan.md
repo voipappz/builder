@@ -2,7 +2,9 @@
 
 Companion to `docs/appz-plan.md`. That document says what a customer's
 application is. This one says what Builder must do so that **a customer
-builds their own application using Builder**, in the order it ships.
+creates an application end to end in Builder, deploy included**: from
+sign-in to a running appz on a phone number, without a terminal. In the
+order it ships; reviewed by Codex on 2026-11-10.
 
 ## Where Builder stands (v0.1.21, 2026-11-09)
 
@@ -28,13 +30,14 @@ install Builder → sign in → New appz → the agent builds (Elixir in the fol
 
 | Version | Builder feature | Needs outside Builder | Proof |
 |---|---|---|---|
-| **v0.1.22** | **Remote appz** (PR #9): `builder.toml url = https://…` opens a folder whose appz runs elsewhere; no make targets, health and page and the Bot socket at the url, `wss://` bridge | Nothing: the cloud Connectix at `cloud.voipappz.io:5100` already answers | Open a folder pointing at the cloud instance; the Bot tab talks to it |
+| **v0.1.22** | **Remote appz** (PR #9): `builder.toml url = https://…` opens a folder whose appz runs elsewhere; no make targets, health and page and the Bot socket at the url, `wss://` bridge. Codex: the url is allowlisted (`*.voipappz.io` over https, or loopback) because the agent edits the folder and the bridge sends its token there; remote health needs a success response; no stop, requires, MCP or local port for a remote | Nothing: the cloud Connectix at `cloud.voipappz.io:5100` already answers; check live that its page loads in Builder's iframe (no frame-ancestors set today) and that login works framed | Open a folder pointing at the cloud instance; the Bot tab talks to it |
 | v0.1.22 | **Appz UX**: one pane titled from `builder.toml` (Admin/User tabs gone), suggestion chips in appz words, startup and onboarding wording as one story, setup progress in the main window | voipappz/app PR (`src/builder-client`), `client.ref` bump | The first screen a customer sees reads as "your appz", not "the app" |
 | v0.1.23 | **Push to the dev instance**: Run = commit and push the folder to the customer's repo; Builder shows the instance's reload result and compile errors in the Status tab | Connectix extension loader (appz plan step 6); a dev instance per customer | Save → page updated in under five seconds |
-| v0.1.23 | **Token from the mothership**: the Bot bridge and the page get the instance's token through the signed-in account, not from a local `.env` | Mothership endpoint: appz of this customer, its url and token | A customer never sees a token |
+| v0.1.23 | **Origin and token from the mothership** (Codex: before customers): the signed-in account yields the customer's appz record, its url and a short-lived scoped token; neither comes from the agent-editable folder | Mothership endpoint: appz of this customer | A customer never sees a token; a folder cannot redirect the bridge |
+| v0.1.23 | **Agent reference and contract** (Codex: before agents generate customer code): the catalog README, the appz contract, refuse edits outside the customer folder | The template's AGENTS.md | The agent proposes Elixir and catalog widgets, never React |
 | v0.1.24 | **New appz**: clone the template from GitHub, name it, register it with the mothership, open it; the template ships three samples (a live screen, a custom call flow, a report) and an AGENTS.md | Template repo; mothership "create appz" (provisioning of the dev instance) | A fresh account reaches a running appz in minutes |
 | v0.1.23 | **Deploy tab, the full tool** (see below): environments, deploy with confirm, status, versions and rollback, logs, number routing | Today: the folder's own make targets (Connectix has deploy, deploy-status, rollback, deploy-logs, deploy-version via Kamal). Later: the same through the mothership's deploy API | A customer deploys, watches, and rolls back without a terminal |
-| v0.1.25 | **Agent guard rails and reference**: the catalog README and the appz contract as the agent's reference; refuse edits outside the customer folder; the agent login choice (bring your own or bundled) | Decision on the agent's login and pricing | The agent proposes Elixir and catalog widgets, never React |
+| v0.1.25 | **Self-serve polish**: the agent login choice (bring your own or bundled) and pricing; end-user login inside the framed appz (third-party-cookie policy); credential expiry and rotation | Decisions on login and pricing | A stranger completes the loop without help |
 | later | Status: live call log from the instance; evals for the bot from the Bot tab; Windows without WSL (nothing to run locally in the cloud model, so this falls out) | Instance events feed | |
 
 ## The Deploy tab: Builder provides the whole deploy tool
@@ -46,7 +49,7 @@ first.
 | Control | What it does | Today (folder make targets, via `[[actions]]`) | Target (mothership deploy API) |
 |---|---|---|---|
 | Environments | dev and prod, which one is selected, its URL and health | `url` + health of the remote appz | The mothership lists the customer's instances |
-| Deploy | Build and ship the current folder to the selected environment; shows the build log live; confirm first | `make deploy DEST=…` (Kamal, exists in Connectix) | "deploy appz for customer C to prod" — the fleet runs Kamal; the customer holds no registry, host or SSH credentials |
+| Deploy | Build and ship the current folder to the selected environment; shows the build log live; confirm first | **Kamal**, driven by Builder: `make deploy DEST=…` runs Kamal in its own Docker image (no Ruby on the machine) with `config/deploy.yml` from the folder, builds the image, pushes it to the registry and swaps the container on the server; exists in Connectix for VoipAppz engineers | The same Kamal, run by the mothership's fleet on "deploy appz for customer C to prod"; the customer holds no registry, host or SSH credentials |
 | Status | What runs where: version, started at, health, containers kept | `make deploy-status` | Mothership status endpoint |
 | Versions and rollback | The versions kept on the server; one click rolls back, with confirm | `make rollback` / `make deploy-version` | Mothership rollback endpoint |
 | Logs | The running instance's log, tailing | `make deploy-logs` | Instance log feed through the mothership |
@@ -57,7 +60,13 @@ first.
 Rules: one action at a time per folder (exists); a dropped request never
 kills a run (exists); every control that changes something outward asks
 first and acts only inside the signed-in customer; outputs are shown
-without secrets.
+without secrets. Order (Codex): status, logs and rollback before Deploy is
+offered to a customer, so a bad deploy can always be undone from Builder.
+
+What Kamal needs, and who holds it: a registry login, the server's SSH key,
+the destination's host details and the runtime secrets. For VoipAppz
+engineers these live in the folder's git-ignored `.kamal/` files. For a
+customer they never leave the mothership.
 
 ## Rules that hold across releases
 
@@ -70,6 +79,16 @@ without secrets.
   VoipAppz engineers and the Noa-style bots.
 - Windows code is compiled only by Installers CI; run it on the branch
   before merging desktop changes.
+
+## Sized honestly (Codex)
+
+- "Push to dev" is bigger than it looks: repo authentication, dirty or
+  uncommitted work, conflicts, retries, correlating a push with the reload,
+  compiler diagnostics, cancellation and recovery.
+- "New appz" hides provisioning, ownership, quotas, cleanup and idempotency.
+- Real self-service also needs: end-user authentication into the framed
+  appz, tenant authorization on every control, actionable instance errors,
+  credential expiry and rotation, deploy state with rollback.
 
 ## Risks
 
