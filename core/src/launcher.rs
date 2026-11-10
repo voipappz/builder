@@ -1371,7 +1371,9 @@ mod tests {
         let taken = held.local_addr().unwrap().port();
         let port = free_port(taken).await.unwrap();
         assert_ne!(port, taken);
-        assert!(port > taken && port < taken + 20);
+        // The held port is ephemeral and may sit near 65535 (seen on the
+        // Windows runner): compare without adding to it.
+        assert!(port > taken && port - taken < 20);
     }
 
 
