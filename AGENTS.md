@@ -4,31 +4,31 @@ Read this first. It is the working brief for any coding agent (and person) in
 this repo. The longer story is in `docs/appz-process.md` (decisions, status,
 session log) and `docs/how-it-works.md`.
 
-## What Builder is (2026-11-05)
+## What Builder is (2026-11-10)
 
-The desktop IDE where a customer's **appz** is built by chat. An appz is the
-customer's own Elixir app (Connectix, connectix-io/connectix): custom logic,
-agents, tools. Builder:
+**The target: a customer builds their own application using Builder.** The
+plan is `docs/appz-plan.md`; read it before proposing anything. In short:
 
-1. signs the user in with their **VoipAppz account** (switch.voipappz.io,
-   checked against `/api/mcp`; required; kept in memory only, so the user
-   signs in again after a restart),
-2. runs the **appz folder** (`builder.toml`: `make setup` once, `make dev
-   PORT=…`, health, `stop`, `[[actions]]` such as tests and deploy),
-3. gives a coding agent (Claude Code over ACP, `npx
-   @agentclientprotocol/claude-agent-acp@0.94.0`) that folder to edit, with
-   the appz's dev MCP and read-only VoipAppz API tools,
-4. shows the **built-in chat** (left) and the appz's own page (right, e.g.
-   `/admin/conversations`), plus a Status tab (log, restart, actions).
+- An **appz** is one container image per customer in VoipAppz's cloud:
+  Connectix (the Elixir engine: voice bot, phone calls over its SIP user
+  agent and mod_earshot, flows, events), the React widget catalog from
+  voipappz/app rendered through live_react, and the **customer folder**
+  (Elixir only: LiveViews, handlers, tools, flows, bot, theme), pulled at
+  boot and on every push.
+- Builder signs the user in with their **VoipAppz account**, starts an appz
+  from the template, gives the coding agent (Claude Code over ACP) the
+  customer folder with read-only VoipAppz API tools, pushes the folder to
+  the customer's cloud dev instance, shows the built-in chat (left) and the
+  appz page (right), lets the user talk to the bot (the Bot tab plays the
+  switch against `/ws/earshot`), and deploys through the mothership.
+- The mothership (voipappz-api + switch) holds users, ACLs, calls, numbers
+  and data. No database in an appz. Customers never write React, never
+  install a toolchain, never see engine code.
 
-The bigger picture, in three facts: each customer gets its own app (PWA);
-its screens are our existing React (voipappz/app packages such as
-`@voipappz/conversations-ui`) rendered by the customer's Elixir through
-live_react; the mothership (voipappz-api + switch) holds users, ACLs, calls
-and data. **Keep it simple**: check every proposal against these facts.
-
-Builder edits **only the Elixir appz**. It does not run or edit the React
-app; shared screens are changed in voipappz/app and vendored into the appz.
+Today Builder still runs a local folder (`builder.toml`: `make setup`,
+`make dev PORT=…`, health, `stop`, `[[actions]]`); the cloud dev instance
+and "New appz" are steps 8 and 9 of the plan. **Keep it simple**: check
+every proposal against the plan's three layers.
 
 ## Layout
 
@@ -97,13 +97,18 @@ tag; Installers publishes the release. Check that the tag's run started.
 
 ## Open
 
-1. Merge connectix #4, re-run builder #3, merge it.
-2. Merge builder #4; the next tag (v0.1.21) publishes .deb/AppImage.
-3. Old `e2e` job: the API in secret `VITE_API_BASE_URL` refuses connections
-   (ECONNREFUSED); bring it up or retire the job with the app path.
-4. voipappz-api #209 (NATS intake) was closed unmerged; Connectix `main`
-   already sends to it.
-5. Delete Builder's old app-centric path; Connectix v0.1.25 tag; first run of
-   v0.1.20 on Windows.
-6. M1b: package the React sip.js phone (`@voipappz/phone-ui`), then the demo
-   customer PWA (phone + conversations via live_react, login mocked).
+1. Merge builder #7 (voipappz/app is private: clone it with the deploy key
+   `APP_DEPLOY_KEY`); until then do not tag a release.
+2. Old `e2e` job: the API in secret `VITE_API_BASE_URL` refuses connections
+   (ECONNREFUSED); retire it with the app path or point it at a live API.
+3. Plan steps 1–4 (`docs/appz-plan.md`): the live call over Parrot from the
+   cloud Connectix; needs SIP credentials on the instance (owner).
+4. Connectix branch `dev/native-loop` (worktree `~/connectix/app-local`,
+   commit ea24b76, not pushed): `MODE=native` via mise for setup/dev/stop/
+   test; verified. Push and PR when the owner says.
+5. Builder for the cloud model: remote-product mode (page + socket URL +
+   token from the mothership), "New appz" from the template, push to the
+   dev instance, setup progress in the main window, appz wording in the
+   chat's suggestion chips.
+6. M1b: package `@voipappz/phone-ui` (sip.js); `dashboard-ui` in shadcn with
+   the port of `chat-ui`/`conversations-ui` (Codex: at dashboard-ui time).
