@@ -638,8 +638,9 @@ async fn start_bot(dir: &Path, env: &HashMap<String, String>, distro: Option<Str
     -> Result<std::sync::Arc<crate::bot::Bot>, String> {
     let spec = crate::bot::read_spec(dir)?;
     let noun = spec.kind.noun();
-    let port = free_port(spec.port).await
-        .ok_or_else(|| format!("No free port between {} and {} for the {noun}.", spec.port, spec.port + 19))?;
+    // A remote appz (url) runs nothing here: no port to reserve.
+    let port = if spec.url.is_some() { spec.port } else { free_port(spec.port).await
+        .ok_or_else(|| format!("No free port between {} and {} for the {noun}.", spec.port, spec.port + 19))? };
     let env: HashMap<String, String> = env.iter()
         .filter(|(k, _)| !matches!(k.as_str(), "TEST_EMAIL" | "TEST_PASSWORD" | "VA_TEST_OTP" | "VA_MCP_BASIC")
             && !k.starts_with("ANTHROPIC_") && !k.starts_with("CLAUDE_"))
@@ -652,7 +653,8 @@ async fn start_bot(dir: &Path, env: &HashMap<String, String>, distro: Option<Str
     if report_progress(&format!("Running the {noun}'s setup (make setup)"), progress, setup).await? {
         progress(&format!("The {noun} is set up."));
     }
-    progress(&format!("Starting the {noun} (make dev PORT={port})…"));
+    progress(&if bot.remote() { format!("Connecting to the {noun} at {}…", bot.origin()) }
+        else { format!("Starting the {noun} (make dev PORT={port})…") });
     let health = match bot.start(progress).await {
         Ok(health) => health,
         Err(e) => {
@@ -662,6 +664,7 @@ async fn start_bot(dir: &Path, env: &HashMap<String, String>, distro: Option<Str
         }
     };
     progress(&match (health.ready, bot.spec.kind) {
+        (true, _) if bot.remote() => format!("The {noun} answers at {}.", bot.origin()),
         (true, _) => format!("The {noun} answers on port {port}."),
         (false, Kind::Bot) => format!("The bot runs on port {port} but is not ready for calls: put OPENAI_API_KEY in {}.", dir.join(".env").display()),
         (false, Kind::Product) => format!("The product runs on port {port} but its health check says it is not ready; see its log."),
@@ -1368,7 +1371,9 @@ mod tests {
         let taken = held.local_addr().unwrap().port();
         let port = free_port(taken).await.unwrap();
         assert_ne!(port, taken);
-        assert!(port > taken && port < taken + 20);
+        // The held port is ephemeral and may sit near 65535 (seen on the
+        // Windows runner): compare without adding to it.
+        assert!(port > taken && port - taken < 20);
     }
 
 

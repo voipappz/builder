@@ -89,6 +89,13 @@ pub struct BotSpec {
     /// Commands that must work before setup, e.g. `["docker"]`.
     #[serde(default)]
     pub requires: Vec<String>,
+    /// The appz runs elsewhere (a cloud dev instance): its origin, such as
+    /// `https://cloud.example.com:5100`. Builder then runs no make targets
+    /// here; it waits for `health` there, frames `page` from there, and
+    /// bridges the Bot tab to `socket` there with the folder's token. The
+    /// agent still edits this folder.
+    #[serde(default)]
+    pub url: Option<String>,
     /// `[[builder.actions]]`: buttons for the folder's own targets.
     #[serde(default)]
     pub actions: Vec<Action>,
@@ -109,7 +116,7 @@ pub fn read_spec(dir: &Path) -> Result<BotSpec, String> {
     let path = dir.join("builder.toml");
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("{}: {e}. A bot folder has a builder.toml with kind = \"bot\" or \"product\".", path.display()))?;
-    let spec = toml::from_str::<BuilderToml>(&text)
+    let mut spec = toml::from_str::<BuilderToml>(&text)
         .map_err(|e| format!("{}: {e}. A bot folder says kind = \"bot\" or \"product\".", path.display()))?.builder;
     let paths = [Some(&spec.health), Some(&spec.socket), spec.mcp.as_ref(), spec.page.as_ref()];
     if paths.into_iter().flatten().any(|p| !p.starts_with('/')) {
@@ -122,7 +129,30 @@ pub fn read_spec(dir: &Path) -> Result<BotSpec, String> {
         || !spec.actions.iter().all(|a| name(&a.id, "-_") && name(&a.make, "-_")) {
         return Err(format!("{}: stop, actions' id and make name make targets, requires names commands (letters, digits, - _ and . in commands)", path.display()));
     }
+    if let Some(url) = spec.url.as_mut() {
+        // The folder is the agent's to edit, and the bridge sends the folder's
+        // token to this origin: only VoipAppz hosts over https, or loopback.
+        let parsed = reqwest::Url::parse(url).ok()
+            .filter(|u| u.path() == "/" && u.query().is_none() && u.fragment().is_none())
+            .filter(|u| remote_origin_allowed(u.scheme(), u.host_str().unwrap_or_default()));
+        match parsed {
+            Some(u) => *url = u.origin().ascii_serialization(),
+            None => return Err(format!("{}: url is the appz's origin with no path: https://<host>.voipappz.io[:port], or http://127.0.0.1:<port> for a local instance", path.display())),
+        }
+        if spec.stop.is_some() || !spec.requires.is_empty() {
+            return Err(format!("{}: a remote appz (url) runs nothing here: drop stop and requires", path.display()));
+        }
+    }
     Ok(spec)
+}
+
+/// Where a remote appz may be: a VoipAppz host over https, or loopback for an
+/// instance running on this machine. Anything else would carry the folder's
+/// token to a host the agent chose.
+fn remote_origin_allowed(scheme: &str, host: &str) -> bool {
+    let loopback = matches!(host, "127.0.0.1" | "localhost" | "[::1]");
+    let voipappz = host == "voipappz.io" || host.ends_with(".voipappz.io");
+    (scheme == "https" && (voipappz || loopback)) || (scheme == "http" && loopback)
 }
 
 /// The shared token the bot asks of Earshot, from the bot's `.env`, read as
@@ -202,9 +232,17 @@ impl Bot {
         state_dir().join(format!("bot-{}.log", self.port))
     }
 
-    /// Where it answers: `http://127.0.0.1:<port>`.
+    /// It runs elsewhere: `url` in its builder.toml, nothing to run here.
+    pub fn remote(&self) -> bool {
+        self.spec.url.is_some()
+    }
+
+    /// Where it answers: its `url`, or `http://127.0.0.1:<port>`.
     pub fn origin(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
+        match &self.spec.url {
+            Some(url) => url.clone(),
+            None => format!("http://127.0.0.1:{}", self.port),
+        }
     }
 
     fn url(&self, path: &str) -> String {
@@ -213,6 +251,9 @@ impl Bot {
 
     /// The folder's dev MCP server, when its builder.toml names one.
     pub fn mcp_url(&self) -> Option<String> {
+        if self.remote() {
+            return None;
+        }
         self.spec.mcp.as_deref().map(|path| self.url(path))
     }
 
@@ -223,6 +264,9 @@ impl Bot {
 
     /// The commands its builder.toml requires, found in the folder's system.
     pub async fn check_requires(&self) -> Result<(), String> {
+        if self.remote() {
+            return Ok(());
+        }
         let native_windows = self.distro.is_none() && cfg!(windows);
         for tool in &self.spec.requires {
             let check = if tool == "docker" { "docker info --format '{{.ServerVersion}}'".to_string() }
@@ -237,9 +281,13 @@ impl Bot {
         Ok(())
     }
 
-    /// The bot's audio WebSocket, for the bridge.
+    /// The bot's audio WebSocket, for the bridge: `ws(s)://` at its origin.
     pub fn socket_url(&self) -> String {
-        format!("ws://127.0.0.1:{}{}", self.port, self.spec.socket)
+        let origin = self.origin();
+        let origin = origin.strip_prefix("https://").map(|rest| format!("wss://{rest}"))
+            .or_else(|| origin.strip_prefix("http://").map(|rest| format!("ws://{rest}")))
+            .unwrap_or(origin);
+        format!("{origin}{}", self.spec.socket)
     }
 
     /// The token, read when needed: `make setup` may have just written it.
@@ -250,7 +298,7 @@ impl Bot {
     /// `make setup`, when the folder's setup marker is missing.
     pub async fn setup_if_needed(&self) -> Result<bool, String> {
         let done = self.spec.setup_done.as_deref().is_some_and(|f| self.dir.join(f).exists());
-        if done {
+        if done || self.remote() {
             return Ok(false);
         }
         run_on(self.distro.as_deref(), "make", &["setup"], &self.dir, &self.env, Duration::from_secs(20 * 60))
@@ -265,7 +313,9 @@ impl Bot {
             Err(_) => return Health { up: false, ready: false },
         };
         match client.get(self.url(&self.spec.health)).send().await {
-            Ok(r) => Health { up: true, ready: r.status().is_success() },
+            // Locally any answer means the process is there; remotely only a
+            // success does, so a wrong path or an unrelated server is not "up".
+            Ok(r) => { let ready = r.status().is_success(); Health { up: ready || !self.remote(), ready } }
             Err(_) => Health { up: false, ready: false },
         }
     }
@@ -276,6 +326,9 @@ impl Bot {
         let _one = self.starting.lock().await;
         if self.stopped.load(Ordering::SeqCst) {
             return Err("Builder is stopping.".into());
+        }
+        if self.remote() {
+            return self.wait_remote(progress).await;
         }
         self.process.lock().await.take();
         // The first start clears what a crashed run on this port left behind (a
@@ -336,6 +389,30 @@ impl Bot {
             if tokio::time::Instant::now() >= next_update {
                 progress(&format!("Waiting for the {} at {} (the first start builds it). Details: {}",
                     self.spec.kind.noun(), self.url(&self.spec.health), self.log_path().display()));
+                next_update = tokio::time::Instant::now() + Duration::from_secs(10);
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    /// A remote appz: nothing to run, wait until its health address answers.
+    async fn wait_remote(&self, progress: &impl Fn(&str)) -> Result<Health, String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(self.spec.start_timeout);
+        let mut next_update = tokio::time::Instant::now();
+        loop {
+            if self.stopped.load(Ordering::SeqCst) {
+                return Err("Builder is stopping.".into());
+            }
+            let health = self.health().await;
+            if health.up {
+                return Ok(health);
+            }
+            if tokio::time::Instant::now() > deadline {
+                return Err(format!("The {} at {} did not answer within {}s.", self.spec.kind.noun(),
+                    self.url(&self.spec.health), self.spec.start_timeout));
+            }
+            if tokio::time::Instant::now() >= next_update {
+                progress(&format!("Waiting for the {} at {}.", self.spec.kind.noun(), self.url(&self.spec.health)));
                 next_update = tokio::time::Instant::now() + Duration::from_secs(10);
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -581,6 +658,25 @@ mod tests {
         assert!(read_spec(dir.path()).is_ok());
         std::fs::write(dir.path().join("builder.toml"), "[builder]\nkind = \"product\"\nname = \"x\"\nmcp = \"voipappz\"\n").unwrap();
         assert!(read_spec(dir.path()).is_err());
+        // A remote appz: its origin, normalised (a default port dropped, another kept).
+        for (url, origin) in [("https://cloud.voipappz.io:5100/", "https://cloud.voipappz.io:5100"),
+                              ("https://acme.voipappz.io:443", "https://acme.voipappz.io"),
+                              ("http://127.0.0.1:4001", "http://127.0.0.1:4001")] {
+            std::fs::write(dir.path().join("builder.toml"),
+                format!("[builder]\nkind = \"product\"\nname = \"Acme\"\nurl = \"{url}\"\nsocket = \"/ws/earshot\"\n")).unwrap();
+            assert_eq!(read_spec(dir.path()).unwrap().url.as_deref(), Some(origin), "{url}");
+        }
+        // The agent edits this folder and the bridge sends its token to the url:
+        // other hosts, plain http off loopback, a path or query are refused.
+        for bad in ["https://evil.example", "https://voipappz.io.evil.example", "https://notvoipappz.io",
+                    "http://cloud.voipappz.io:5100", "https://cloud.voipappz.io/app", "https://cloud.voipappz.io/?x=1",
+                    "ftp://cloud.voipappz.io", "cloud.voipappz.io"] {
+            std::fs::write(dir.path().join("builder.toml"), format!("[builder]\nkind = \"product\"\nname = \"x\"\nurl = \"{bad}\"\n")).unwrap();
+            assert!(read_spec(dir.path()).is_err(), "{bad}");
+        }
+        // Nothing runs here for a remote appz: stop and requires are refused.
+        std::fs::write(dir.path().join("builder.toml"), "[builder]\nkind = \"product\"\nname = \"x\"\nurl = \"https://a.voipappz.io\"\nstop = \"down\"\n").unwrap();
+        assert!(read_spec(dir.path()).unwrap_err().contains("drop stop and requires"));
         std::fs::write(dir.path().join("builder.toml"),
             "[builder]\nkind = \"bot\"\nname = \"Noa\"\nport = 8091\nsetup_done = \".env\"\n").unwrap();
         std::fs::write(dir.path().join(".env"), "OPENAI_API_KEY=k\nEARSHOT_BOT_TOKEN=\"abc\"\n").unwrap();
@@ -625,7 +721,7 @@ mod tests {
         std::fs::write(dir.path().join(".env"), "EARSHOT_BOT_TOKEN=t0ken\n").unwrap();
         let spec = BotSpec { kind: Kind::Bot, name: "t".into(), port: bot_port, health: "/healthz".into(),
             socket: "/earshot".into(), setup_done: None, start_timeout: 5, stop: None, mcp: None, page: None,
-            requires: vec![], actions: vec![] };
+            requires: vec![], actions: vec![], url: None };
         let bot = Arc::new(Bot::new(spec, dir.path().to_path_buf(), bot_port, None, HashMap::new()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -642,6 +738,42 @@ mod tests {
         let (mut page, _) = bot_ws::connect_async(format!("ws://127.0.0.1:{port}/bot/socket")).await.unwrap();
         let UpMessage::Text(text) = page.next().await.unwrap().unwrap() else { panic!("expected the error event") };
         assert!(text.contains("builder_error"), "{text}");
+    }
+
+    /// A remote appz: no make targets, health checked at its url, the Bot tab
+    /// bridged to its socket (ws for an http origin; wss needs the TLS feature,
+    /// which is on).
+    #[tokio::test]
+    async fn a_remote_appz_is_waited_for_and_bridged_without_make() {
+        let bot_port = echo_bot("t0ken").await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "EARSHOT_BOT_TOKEN=t0ken\n").unwrap();
+        std::fs::write(dir.path().join("builder.toml"), format!(
+            "[builder]\nkind = \"product\"\nname = \"Acme\"\nurl = \"http://127.0.0.1:{bot_port}\"\nsocket = \"/earshot\"\nmcp = \"/mcp\"\nstart_timeout = 2\n")).unwrap();
+        let spec = read_spec(dir.path()).unwrap();
+        // The local port is unused: the origin is the url.
+        let bot = Arc::new(Bot::new(spec, dir.path().to_path_buf(), 1, None, HashMap::new()));
+        assert!(bot.remote());
+        assert_eq!(bot.origin(), format!("http://127.0.0.1:{bot_port}"));
+        assert_eq!(bot.socket_url(), format!("ws://127.0.0.1:{bot_port}/earshot"));
+        assert_eq!(bot.mcp_url(), None, "no local MCP for a remote appz");
+        bot.check_requires().await.unwrap();
+        assert_eq!(bot.setup_if_needed().await.unwrap(), false, "no make setup for a remote appz");
+        // No Makefile in the folder: start only waits for health, and remotely
+        // a 404 (the stand-in has no /healthz) is not "up": a wrong path or an
+        // unrelated server must not pass.
+        assert!(bot.start(&|_| {}).await.unwrap_err().contains("did not answer"));
+        let health = bot.health().await;
+        assert!(!health.up && !health.ready);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let routes_bot = bot.clone();
+        tokio::spawn(async move { axum::serve(listener, routes(routes_bot)).await.unwrap() });
+        let (mut page, _) = bot_ws::connect_async(format!("ws://127.0.0.1:{port}/bot/socket")).await.unwrap();
+        page.send(UpMessage::Binary(vec![9u8, 8].into())).await.unwrap();
+        assert_eq!(page.next().await.unwrap().unwrap(), UpMessage::Binary(vec![9u8, 8].into()));
+        bot.stop().await;
     }
 
     #[cfg(unix)]
@@ -662,7 +794,7 @@ h.HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()\n").unwrap();
         let spec = BotSpec { kind: Kind::Product, name: "t".into(), port, health: "/healthz".into(),
             socket: "/earshot".into(), setup_done: None, start_timeout: 20, stop: Some("halt".into()),
             mcp: Some("/voipappz/mcp".into()), page: Some("/admin".into()), requires: vec!["python3".into()],
-            actions: vec![] };
+            actions: vec![], url: None };
         let env: HashMap<String, String> = std::env::vars().collect();
         let bot = Bot::new(spec, dir.path().to_path_buf(), port, None, env);
         bot.check_requires().await.unwrap();
@@ -689,7 +821,7 @@ h.HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()\n").unwrap();
         let action = |id: &str, confirm| Action { id: id.into(), label: id.into(), make: id.into(), confirm };
         let spec = BotSpec { kind: Kind::Product, name: "t".into(), port: 4100, health: "/".into(), socket: "/earshot".into(),
             setup_done: None, start_timeout: 5, stop: None, mcp: None, page: None, requires: vec![],
-            actions: vec![action("check", false), action("ship", true), action("fail", false)] };
+            actions: vec![action("check", false), action("ship", true), action("fail", false)], url: None };
         let env: HashMap<String, String> = std::env::vars().collect();
         let bot = Arc::new(Bot::new(spec, dir.path().to_path_buf(), 4100, None, env));
         async fn finish(bot: &Arc<Bot>, id: &str, confirmed: bool) -> ActionRun {
@@ -734,7 +866,7 @@ h.HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()\n").unwrap();
 down:\n\t-kill $$(cat pid.$(PORT)) && rm pid.$(PORT)\n").unwrap();
         let spec = BotSpec { kind: Kind::Product, name: "t".into(), port, health: "/".into(),
             socket: "/earshot".into(), setup_done: None, start_timeout: 20, stop: Some("down".into()),
-            mcp: None, page: None, requires: vec![], actions: vec![] };
+            mcp: None, page: None, requires: vec![], actions: vec![], url: None };
         let env: HashMap<String, String> = std::env::vars().collect();
         let bot = Bot::new(spec, dir.path().to_path_buf(), port, None, env);
         assert_eq!(bot.start(&|_| {}).await.unwrap(), Health { up: true, ready: true });
