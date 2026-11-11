@@ -3,7 +3,7 @@
 # customer's Elixir appz folder (Connectix), no React app. Clones Connectix,
 # starts the Builder CLI with that folder (Connectix's `make setup` and
 # `make dev` in Docker), then checks in a real browser that the built-in
-# chat renders, the appz's tab shows its conversations page, and the agent
+# chat renders, the appz's tab shows its Calls dashboard, and the agent
 # answers. No chat turn: that needs a model key.
 #
 #   scripts/e2e-appz.sh [work-dir]
