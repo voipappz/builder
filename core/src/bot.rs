@@ -29,7 +29,7 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::command::{create_shell_command, spawn_command, ChildProcess};
-use crate::launcher::{command_path, run_on, sh_quote, state_dir, wsl_env};
+use crate::launcher::{command_path, run_on, sh_quote, state_dir, wsl_env_appz};
 
 /// What a folder is: a voice bot, or a product (Connectix, the bot brain).
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -200,6 +200,9 @@ pub struct Bot {
     pub port: u16,
     distro: Option<String>,
     env: HashMap<String, String>,
+    /// What only `make dev` gets: the mothership tokens the appz's pages read
+    /// with. Setup, actions and stop run without them.
+    secrets: HashMap<String, String>,
     process: Mutex<Option<ChildProcess>>,
     /// One start at a time: a second restart waits for the first.
     starting: Mutex<()>,
@@ -221,8 +224,8 @@ impl std::fmt::Debug for Bot {
 }
 
 impl Bot {
-    pub fn new(spec: BotSpec, dir: PathBuf, port: u16, distro: Option<String>, env: HashMap<String, String>) -> Self {
-        Self { spec, dir, port, distro, env, process: Mutex::new(None), starting: Mutex::new(()),
+    pub fn new(spec: BotSpec, dir: PathBuf, port: u16, distro: Option<String>, env: HashMap<String, String>, secrets: HashMap<String, String>) -> Self {
+        Self { spec, dir, port, distro, env, secrets, process: Mutex::new(None), starting: Mutex::new(()),
             stopped: AtomicBool::new(false), started: AtomicBool::new(false),
             acting: Arc::new(Mutex::new(())), last_action: std::sync::Mutex::new(None) }
     }
@@ -342,13 +345,15 @@ impl Bot {
         let log_err = log.try_clone().map_err(|e| e.to_string())?;
         let script = format!("make dev PORT={}", self.port);
         let distro = self.distro.as_deref();
+        let mut dev_env = self.env.clone();
+        dev_env.extend(self.secrets.clone());
         let mut command = match distro {
-            Some(_) => create_shell_command(&format!("exec bash -lc {}", sh_quote(&script)), wsl_env(&self.env),
+            Some(_) => create_shell_command(&format!("exec bash -lc {}", sh_quote(&script)), wsl_env_appz(&dev_env),
                 &command_path(&self.dir, distro), distro),
             None => {
                 // Only what Builder chose to pass: none of its own logins or keys.
                 let mut command = create_shell_command(&script, HashMap::new(), &self.dir.to_string_lossy(), None);
-                command.env_clear().envs(&self.env);
+                command.env_clear().envs(&dev_env);
                 command
             }
         };
@@ -722,7 +727,7 @@ mod tests {
         let spec = BotSpec { kind: Kind::Bot, name: "t".into(), port: bot_port, health: "/healthz".into(),
             socket: "/earshot".into(), setup_done: None, start_timeout: 5, stop: None, mcp: None, page: None,
             requires: vec![], actions: vec![], url: None };
-        let bot = Arc::new(Bot::new(spec, dir.path().to_path_buf(), bot_port, None, HashMap::new()));
+        let bot = Arc::new(Bot::new(spec, dir.path().to_path_buf(), bot_port, None, HashMap::new(), HashMap::new()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move { axum::serve(listener, routes(bot)).await.unwrap() });
@@ -752,7 +757,7 @@ mod tests {
             "[builder]\nkind = \"product\"\nname = \"Acme\"\nurl = \"http://127.0.0.1:{bot_port}\"\nsocket = \"/earshot\"\nmcp = \"/mcp\"\nstart_timeout = 2\n")).unwrap();
         let spec = read_spec(dir.path()).unwrap();
         // The local port is unused: the origin is the url.
-        let bot = Arc::new(Bot::new(spec, dir.path().to_path_buf(), 1, None, HashMap::new()));
+        let bot = Arc::new(Bot::new(spec, dir.path().to_path_buf(), 1, None, HashMap::new(), HashMap::new()));
         assert!(bot.remote());
         assert_eq!(bot.origin(), format!("http://127.0.0.1:{bot_port}"));
         assert_eq!(bot.socket_url(), format!("ws://127.0.0.1:{bot_port}/earshot"));
@@ -796,7 +801,7 @@ h.HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()\n").unwrap();
             mcp: Some("/voipappz/mcp".into()), page: Some("/admin".into()), requires: vec!["python3".into()],
             actions: vec![], url: None };
         let env: HashMap<String, String> = std::env::vars().collect();
-        let bot = Bot::new(spec, dir.path().to_path_buf(), port, None, env);
+        let bot = Bot::new(spec, dir.path().to_path_buf(), port, None, env, HashMap::new());
         bot.check_requires().await.unwrap();
         assert_eq!(bot.mcp_url(), Some(format!("http://127.0.0.1:{port}/voipappz/mcp")));
         assert_eq!(bot.page_url(), Some(format!("http://127.0.0.1:{port}/admin")));
@@ -823,7 +828,7 @@ h.HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()\n").unwrap();
             setup_done: None, start_timeout: 5, stop: None, mcp: None, page: None, requires: vec![],
             actions: vec![action("check", false), action("ship", true), action("fail", false)], url: None };
         let env: HashMap<String, String> = std::env::vars().collect();
-        let bot = Arc::new(Bot::new(spec, dir.path().to_path_buf(), 4100, None, env));
+        let bot = Arc::new(Bot::new(spec, dir.path().to_path_buf(), 4100, None, env, HashMap::new()));
         async fn finish(bot: &Arc<Bot>, id: &str, confirmed: bool) -> ActionRun {
             bot.start_action(id, confirmed).unwrap();
             loop {
@@ -868,7 +873,7 @@ down:\n\t-kill $$(cat pid.$(PORT)) && rm pid.$(PORT)\n").unwrap();
             socket: "/earshot".into(), setup_done: None, start_timeout: 20, stop: Some("down".into()),
             mcp: None, page: None, requires: vec![], actions: vec![], url: None };
         let env: HashMap<String, String> = std::env::vars().collect();
-        let bot = Bot::new(spec, dir.path().to_path_buf(), port, None, env);
+        let bot = Bot::new(spec, dir.path().to_path_buf(), port, None, env, HashMap::new());
         assert_eq!(bot.start(&|_| {}).await.unwrap(), Health { up: true, ready: true });
         bot.stop().await;
         tokio::time::sleep(Duration::from_millis(300)).await;
