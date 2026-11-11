@@ -132,7 +132,7 @@ pub fn cleanup_appimage_env(cmd: &mut std::process::Command) {
 
 /// Logins Builder may hold in its own environment. A command gets one only
 /// when its caller passes it, never by inheritance.
-const LOGIN_VARS: [&str; 6] = ["TEST_EMAIL", "TEST_PASSWORD", "VA_TEST_OTP", "VA_MCP_BASIC", "MOTHERSHIP_API_TOKEN", "MOTHERSHIP_REFRESH_TOKEN"];
+const LOGIN_VARS: [&str; 7] = ["TEST_EMAIL", "TEST_PASSWORD", "VA_TEST_OTP", "VA_MCP_BASIC", "MOTHERSHIP_API_BASIC", "MOTHERSHIP_API_TOKEN", "MOTHERSHIP_REFRESH_TOKEN"];
 
 fn drop_unpassed_logins(command: &mut Command, env: &HashMap<String, String>) {
     for name in LOGIN_VARS.iter().filter(|name| !env.contains_key(**name)) {
