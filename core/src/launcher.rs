@@ -163,16 +163,44 @@ pub(crate) fn sh_quote(s: &str) -> String {
 
 /// What a command inside the distro gets from Builder: its PATH and the
 /// variables Builder adds. wsl.exe gets them through WSLENV (PATH on the
-/// command line), and the distro gives HOME, USER and the rest itself. The
-/// mothership tokens are on the list because the appz process is what
-/// reads them (bot.rs); the agent's environment drops them before this.
+/// command line), and the distro gives HOME, USER and the rest itself. No
+/// mothership token is on this list: it serves the agent, setup and actions.
 pub(crate) fn wsl_env(env: &HashMap<String, String>) -> HashMap<String, String> {
     env.iter()
-        .filter(|(k, _)| matches!(k.as_str(), "PATH" | "TEST_EMAIL" | "TEST_PASSWORD" | "VA_TEST_OTP" | "VITE_API_BASE_URL"
-                | "MOTHERSHIP_API_URL" | "MOTHERSHIP_API_TOKEN" | "MOTHERSHIP_REFRESH_TOKEN")
+        .filter(|(k, _)| matches!(k.as_str(), "PATH" | "TEST_EMAIL" | "TEST_PASSWORD" | "VA_TEST_OTP" | "VITE_API_BASE_URL")
             || k.starts_with("ANTHROPIC_") || k.starts_with("CLAUDE_"))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
+}
+
+/// The same for the appz's own `make dev`, the one command that also gets
+/// the mothership tokens its pages read with (bot.rs).
+pub(crate) fn wsl_env_appz(env: &HashMap<String, String>) -> HashMap<String, String> {
+    let mut passed = wsl_env(env);
+    for name in APPZ_SECRETS {
+        if let Some(value) = env.get(name) {
+            passed.insert(name.to_string(), value.clone());
+        }
+    }
+    passed
+}
+
+/// What Builder hands the appz's `make dev` and nothing else.
+pub(crate) const APPZ_SECRETS: [&str; 3] = ["MOTHERSHIP_API_URL", "MOTHERSHIP_API_TOKEN", "MOTHERSHIP_REFRESH_TOKEN"];
+
+/// The agent's environment: Builder's, without any login or token.
+pub(crate) fn agent_env_from(env: HashMap<String, String>) -> HashMap<String, String> {
+    env.into_iter()
+        .filter(|(k, _)| !matches!(k.as_str(), "VA_MCP_BASIC" | "TEST_EMAIL" | "TEST_PASSWORD" | "VA_TEST_OTP"
+            | "MOTHERSHIP_API_TOKEN" | "MOTHERSHIP_REFRESH_TOKEN"))
+        .collect()
+}
+
+/// Accounts that answered the sign-in with a one-time code: asked once per
+/// run, so a restart does not mail the user another unusable code.
+fn otp_accounts() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    SEEN.get_or_init(Default::default)
 }
 
 /// Whether a distro's `uname -r` is a WSL2 kernel ("…-microsoft-standard-WSL2");
@@ -250,7 +278,11 @@ pub async fn preflight(settings: &Settings, env: &HashMap<String, String>) -> Ve
             Check::new("WSL version", Level::Fail, format!("{d} runs on WSL1 ({kernel}); Builder needs WSL2. In PowerShell: wsl --set-version {d} 2"))
         });
     }
-    let tools: &[(&str, &str)] = if appz {
+    // A remote appz (`url` in builder.toml) runs nothing on this computer.
+    let remote = settings.bot_dir.as_deref().and_then(|dir| crate::bot::read_spec(dir).ok()).is_some_and(|spec| spec.url.is_some());
+    let tools: &[(&str, &str)] = if appz && remote {
+        &[]
+    } else if appz {
         &[("make", "Builder runs the appz with its Makefile"), ("bash", "the appz's Makefile needs bash")]
     } else {
         &[("git", "Builder makes its working copy with git"), ("make", "Builder runs the app with its Makefile"), ("bash", "the app's Makefile needs bash"), ("curl", "the app's Makefile needs curl")]
@@ -674,7 +706,7 @@ impl Running {
 /// The bot's `make setup` when needed, then `make dev` on a free port near
 /// the one its builder.toml names. The bot gets no API login and none of the
 /// agent's keys.
-async fn start_bot(dir: &Path, env: &HashMap<String, String>, distro: Option<String>, progress: &impl Fn(&str))
+async fn start_bot(dir: &Path, env: &HashMap<String, String>, secrets: HashMap<String, String>, distro: Option<String>, progress: &impl Fn(&str))
     -> Result<std::sync::Arc<crate::bot::Bot>, String> {
     let spec = crate::bot::read_spec(dir)?;
     let noun = spec.kind.noun();
@@ -685,7 +717,7 @@ async fn start_bot(dir: &Path, env: &HashMap<String, String>, distro: Option<Str
         .filter(|(k, _)| !matches!(k.as_str(), "TEST_EMAIL" | "TEST_PASSWORD" | "VA_TEST_OTP" | "VA_MCP_BASIC")
             && !k.starts_with("ANTHROPIC_") && !k.starts_with("CLAUDE_"))
         .map(|(k, v)| (k.clone(), v.clone())).collect();
-    let bot = crate::bot::Bot::new(spec, dir.to_path_buf(), port, distro, env);
+    let bot = crate::bot::Bot::new(spec, dir.to_path_buf(), port, distro, env, secrets);
     progress(&format!("{}: {} in {}", if bot.spec.kind == Kind::Product { "Product" } else { "Voice bot" },
         bot.spec.name, dir.display()));
     bot.check_requires().await?;
@@ -994,21 +1026,33 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
 
     let appz = appz_only(settings);
     // The appz's pages read the mothership (its calls, …) as the signed-in
-    // user: the sign-in is traded for tokens that go to the appz process
-    // (`make dev`), never to the agent (filtered below). Without a sign-in
-    // the appz keeps whatever its own .env says.
-    if let (Some(l), Some(api), true) = (&login, &api_url, appz) {
-        match mothership_tokens(api, &l.email, &l.password).await {
-            Ok(Some((access, refresh))) => {
-                env.insert("MOTHERSHIP_API_URL".into(), api.clone());
-                env.insert("MOTHERSHIP_API_TOKEN".into(), access);
-                if !refresh.is_empty() {
-                    env.insert("MOTHERSHIP_REFRESH_TOKEN".into(), refresh);
+    // user: the sign-in is traded for tokens that go to the appz's own
+    // `make dev` and to nothing else Builder runs (not setup, not actions,
+    // not the agent's process). The agent edits the appz's code, so this is
+    // separation of environments, not a wall: see docs/demo.md. A remote
+    // appz runs nothing here, so there is no process to hand them to.
+    let mut appz_secrets: HashMap<String, String> = HashMap::new();
+    let remote_appz = settings.bot_dir.as_deref().and_then(|dir| crate::bot::read_spec(dir).ok()).is_some_and(|spec| spec.url.is_some());
+    if let (Some(l), Some(api), true, false) = (&login, &api_url, appz, remote_appz) {
+        let account = format!("{api} {}", l.email.trim());
+        if otp_accounts().lock().unwrap().contains(&account) {
+            progress("Your account asks for a one-time code at sign-in; the appz's pages will say they are not connected until a token is set in its .env.");
+        } else {
+            match mothership_tokens(api, &l.email, &l.password).await {
+                Ok(Some((access, refresh))) => {
+                    appz_secrets.insert("MOTHERSHIP_API_URL".into(), api.clone());
+                    appz_secrets.insert("MOTHERSHIP_API_TOKEN".into(), access);
+                    if !refresh.is_empty() {
+                        appz_secrets.insert("MOTHERSHIP_REFRESH_TOKEN".into(), refresh);
+                    }
+                    progress("Signed in for the appz's pages: they read your VoipAppz calls.");
                 }
-                progress("Signed in for the appz's pages: they read your VoipAppz calls.");
+                Ok(None) => {
+                    otp_accounts().lock().unwrap().insert(account);
+                    progress("Your account asks for a one-time code at sign-in; the appz's pages will say they are not connected until a token is set in its .env.");
+                }
+                Err(why) => progress(&format!("The appz's pages get no VoipAppz token ({why}); they will say they are not connected.")),
             }
-            Ok(None) => progress("Your account asks for a one-time code at sign-in; the appz's pages will say they are not connected until a token is set in its .env."),
-            Err(why) => progress(&format!("The appz's pages get no VoipAppz token ({why}); they will say they are not connected.")),
         }
     }
     let workspace = match (&settings.bot_dir, appz) {
@@ -1093,7 +1137,7 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
                 return Err(format!("The voice bot folder {} must be on the same system as the app ({}).",
                     dir.display(), wsl_distro(settings).map_or("this computer".into(), |d| format!("WSL {d}"))));
             }
-            Some(start_bot(dir, &env, bot_distro, &progress).await?)
+            Some(start_bot(dir, &env, appz_secrets, bot_distro, &progress).await?)
         }
     };
     // Any later failure stops the bot or product, so nothing it started
@@ -1129,9 +1173,7 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
         progress(&format!("Port {} is busy (another Builder, possibly running in WSL); using port {port}.", settings.port));
     }
     let distro = wsl_distro(settings);
-    let mut agent_env: HashMap<String, String> = env.into_iter()
-        .filter(|(k, _)| !matches!(k.as_str(), "VA_MCP_BASIC" | "TEST_EMAIL" | "TEST_PASSWORD"
-            | "MOTHERSHIP_API_TOKEN" | "MOTHERSHIP_REFRESH_TOKEN")).collect();
+    let mut agent_env = agent_env_from(env);
     if distro.is_some() {
         agent_env = wsl_env(&agent_env);
     }
@@ -1361,10 +1403,15 @@ mod tests {
         let env = HashMap::from([("PATH".to_string(), "/usr/bin".to_string()), ("TEST_EMAIL".into(), "a@b".into()),
             ("WINDIR".into(), r"C:\Windows".into()), ("ANTHROPIC_MODEL".into(), "x".into()),
             ("MOTHERSHIP_API_TOKEN".into(), "t".into()), ("MOTHERSHIP_REFRESH_TOKEN".into(), "r".into()),
-            ("MOTHERSHIP_API_URL".into(), "https://switch.test".into())]);
-        let mut keys: Vec<String> = wsl_env(&env).into_keys().collect();
-        keys.sort();
-        assert_eq!(keys, ["ANTHROPIC_MODEL", "MOTHERSHIP_API_TOKEN", "MOTHERSHIP_API_URL", "MOTHERSHIP_REFRESH_TOKEN", "PATH", "TEST_EMAIL"]);
+            ("MOTHERSHIP_API_URL".into(), "https://switch.test".into()), ("VA_TEST_OTP".into(), "1".into())]);
+        let sorted = |map: HashMap<String, String>| { let mut keys: Vec<String> = map.into_keys().collect(); keys.sort(); keys };
+        // What crosses into WSL for the agent, setup and actions: no token.
+        assert_eq!(sorted(wsl_env(&env)), ["ANTHROPIC_MODEL", "PATH", "TEST_EMAIL", "VA_TEST_OTP"]);
+        // The appz's make dev alone also gets the mothership tokens.
+        assert_eq!(sorted(wsl_env_appz(&env)), ["ANTHROPIC_MODEL", "MOTHERSHIP_API_TOKEN", "MOTHERSHIP_API_URL", "MOTHERSHIP_REFRESH_TOKEN", "PATH", "TEST_EMAIL", "VA_TEST_OTP"]);
+        // The agent, on any system and through WSL: no login, no token.
+        assert_eq!(sorted(agent_env_from(env.clone())), ["ANTHROPIC_MODEL", "MOTHERSHIP_API_URL", "PATH", "WINDIR"]);
+        assert_eq!(sorted(wsl_env(&agent_env_from(env))), ["ANTHROPIC_MODEL", "PATH"]);
     }
 
     #[test]

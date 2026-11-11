@@ -29,8 +29,10 @@ Today Builder still runs a local folder (`builder.toml`: `make setup`,
 `make dev PORT=…`, health, `stop`, `[[actions]]`), shows the appz's first
 page (Connectix's Calls dashboard at `/app/dashboard`) and trades the
 user's sign-in at `/auth/login` for the mothership tokens that page reads
-calls with (`MOTHERSHIP_API_URL/_API_TOKEN/_REFRESH_TOKEN` in the appz
-process's environment, never the agent's; `docs/demo.md`); the cloud dev
+calls with (`MOTHERSHIP_API_URL/_API_TOKEN/_REFRESH_TOKEN`, handed to the
+appz's `make dev` only, not to setup, actions or the agent's process; the
+agent edits that appz's code, so see `docs/demo.md` on what this is not);
+the cloud dev
 instance and "New appz" are steps 8 and 9 of the plan. **Keep it simple**: check
 every proposal against the plan's three layers.
 
