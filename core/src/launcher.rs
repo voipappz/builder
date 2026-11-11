@@ -489,6 +489,43 @@ pub async fn api_mcp_server(api_url: &str, basic: Option<&str>) -> Result<ApiMcp
     })
 }
 
+/// The tokens the appz's pages read the mothership with: the user's own
+/// sign-in traded at `POST /auth/login` (the VoipAppz admin's sign-in) for an
+/// access token, which lives about an hour, and a refresh token the appz
+/// renews it with. `Ok(None)` when the account asks for a one-time code,
+/// which Builder cannot answer yet. The password goes to the API and nowhere
+/// else; the tokens go to the appz process, never to the agent.
+pub async fn mothership_tokens(api_url: &str, email: &str, password: &str) -> Result<Option<(String, String)>, String> {
+    let api_url = api_url.trim_end_matches('/');
+    if !valid_origin(api_url) {
+        return Err("Use an HTTPS API address, or HTTP on localhost for a local API.".into());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = client
+        .post(format!("{api_url}/auth/login"))
+        .form(&[("email", email.trim()), ("password", password)])
+        .send()
+        .await
+        .map_err(|_| "the API did not answer /auth/login".to_string())?;
+    let status = response.status();
+    let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
+    if body.get("otp_sent").and_then(|v| v.as_bool()) == Some(true) {
+        return Ok(None);
+    }
+    match (status.is_success(), body.get("access_token").and_then(|v| v.as_str())) {
+        (true, Some(access)) if !access.is_empty() => Ok(Some((
+            access.to_string(),
+            body.get("refresh_token").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        ))),
+        (true, _) => Err("the API answered /auth/login without a token".into()),
+        (false, _) => Err(format!("the API answered {status} to /auth/login")),
+    }
+}
+
 /// Probe the actual API endpoint: /health can be routed to a separate service.
 pub async fn check_api_connection(api_url: &str, email: &str, password: &str) -> Result<String, String> {
     let api_url = api_url.trim().trim_end_matches('/');
@@ -953,6 +990,24 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
     };
 
     let appz = appz_only(settings);
+    // The appz's pages read the mothership (its calls, …) as the signed-in
+    // user: the sign-in is traded for tokens that go to the appz process
+    // (`make dev`), never to the agent (filtered below). Without a sign-in
+    // the appz keeps whatever its own .env says.
+    if let (Some(l), Some(api), true) = (&login, &api_url, appz) {
+        match mothership_tokens(api, &l.email, &l.password).await {
+            Ok(Some((access, refresh))) => {
+                env.insert("MOTHERSHIP_API_URL".into(), api.clone());
+                env.insert("MOTHERSHIP_API_TOKEN".into(), access);
+                if !refresh.is_empty() {
+                    env.insert("MOTHERSHIP_REFRESH_TOKEN".into(), refresh);
+                }
+                progress("Signed in for the appz's pages: they read your VoipAppz calls.");
+            }
+            Ok(None) => progress("Your account asks for a one-time code at sign-in; the appz's pages will say they are not connected until a token is set in its .env."),
+            Err(why) => progress(&format!("The appz's pages get no VoipAppz token ({why}); they will say they are not connected.")),
+        }
+    }
     let workspace = match (&settings.bot_dir, appz) {
         (Some(dir), true) => dir.clone(),
         _ => ensure_workspace(settings, &env, &progress).await?,
@@ -1072,7 +1127,8 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
     }
     let distro = wsl_distro(settings);
     let mut agent_env: HashMap<String, String> = env.into_iter()
-        .filter(|(k, _)| !matches!(k.as_str(), "VA_MCP_BASIC" | "TEST_EMAIL" | "TEST_PASSWORD")).collect();
+        .filter(|(k, _)| !matches!(k.as_str(), "VA_MCP_BASIC" | "TEST_EMAIL" | "TEST_PASSWORD"
+            | "MOTHERSHIP_API_TOKEN" | "MOTHERSHIP_REFRESH_TOKEN")).collect();
     if distro.is_some() {
         agent_env = wsl_env(&agent_env);
     }
@@ -1203,6 +1259,29 @@ mod tests {
     }
 
 
+
+    #[tokio::test]
+    async fn the_sign_in_becomes_the_appz_pages_tokens() {
+        use axum::{extract::Form, http::StatusCode, routing::post, Json, Router};
+        #[derive(serde::Deserialize)]
+        struct SignIn { email: String, password: String }
+        let app = Router::new().route("/auth/login", post(|Form(s): Form<SignIn>| async move {
+            match s.password.as_str() {
+                "right" => (StatusCode::OK, Json(json!({"access_token": format!("acc-{}", s.email), "refresh_token": "ref"}))),
+                "otp" => (StatusCode::OK, Json(json!({"otp_sent": true, "temp_token": "t"}))),
+                _ => (StatusCode::UNAUTHORIZED, Json(json!({"error": "Invalid email or password"}))),
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let api = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        assert_eq!(mothership_tokens(&api, " a@b.c ", "right").await.unwrap(), Some(("acc-a@b.c".into(), "ref".into())));
+        assert_eq!(mothership_tokens(&api, "a@b.c", "otp").await.unwrap(), None);
+        let refused = mothership_tokens(&api, "a@b.c", "wrong").await.unwrap_err();
+        assert!(refused.contains("401"), "{refused}");
+        assert!(mothership_tokens("ftp://x", "a@b.c", "right").await.is_err());
+    }
 
     #[test]
     fn settings_round_trip_and_defaults() {
