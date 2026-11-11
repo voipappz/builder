@@ -163,10 +163,13 @@ pub(crate) fn sh_quote(s: &str) -> String {
 
 /// What a command inside the distro gets from Builder: its PATH and the
 /// variables Builder adds. wsl.exe gets them through WSLENV (PATH on the
-/// command line), and the distro gives HOME, USER and the rest itself.
+/// command line), and the distro gives HOME, USER and the rest itself. The
+/// mothership tokens are on the list because the appz process is what
+/// reads them (bot.rs); the agent's environment drops them before this.
 pub(crate) fn wsl_env(env: &HashMap<String, String>) -> HashMap<String, String> {
     env.iter()
-        .filter(|(k, _)| matches!(k.as_str(), "PATH" | "TEST_EMAIL" | "TEST_PASSWORD" | "VA_TEST_OTP" | "VITE_API_BASE_URL")
+        .filter(|(k, _)| matches!(k.as_str(), "PATH" | "TEST_EMAIL" | "TEST_PASSWORD" | "VA_TEST_OTP" | "VITE_API_BASE_URL"
+                | "MOTHERSHIP_API_URL" | "MOTHERSHIP_API_TOKEN" | "MOTHERSHIP_REFRESH_TOKEN")
             || k.starts_with("ANTHROPIC_") || k.starts_with("CLAUDE_"))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
@@ -1356,10 +1359,12 @@ mod tests {
         assert_eq!(sh_quote("it's here"), "'it'\\''s here'");
         assert_eq!(sh_quote(""), "''");
         let env = HashMap::from([("PATH".to_string(), "/usr/bin".to_string()), ("TEST_EMAIL".into(), "a@b".into()),
-            ("WINDIR".into(), r"C:\Windows".into()), ("ANTHROPIC_MODEL".into(), "x".into())]);
+            ("WINDIR".into(), r"C:\Windows".into()), ("ANTHROPIC_MODEL".into(), "x".into()),
+            ("MOTHERSHIP_API_TOKEN".into(), "t".into()), ("MOTHERSHIP_REFRESH_TOKEN".into(), "r".into()),
+            ("MOTHERSHIP_API_URL".into(), "https://switch.test".into())]);
         let mut keys: Vec<String> = wsl_env(&env).into_keys().collect();
         keys.sort();
-        assert_eq!(keys, ["ANTHROPIC_MODEL", "PATH", "TEST_EMAIL"]);
+        assert_eq!(keys, ["ANTHROPIC_MODEL", "MOTHERSHIP_API_TOKEN", "MOTHERSHIP_API_URL", "MOTHERSHIP_REFRESH_TOKEN", "PATH", "TEST_EMAIL"]);
     }
 
     #[test]
