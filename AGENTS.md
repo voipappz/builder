@@ -37,6 +37,24 @@ the cloud dev
 instance and "New appz" are steps 8 and 9 of the plan. **Keep it simple**: check
 every proposal against the plan's three layers.
 
+## Customer apps: the concept (decided 2026-11-12)
+
+- **Every customer gets a unique application**: own screens, own logic, own
+  server. Connectix is the engine underneath (voice, Sagents, SIP/Membrane,
+  flows); Builder is where the customer's app is built, by chat.
+- **Screens are shadcn**, seeded **by copying** from the starter kit
+  `voipappz/ui` (private). The copy is the customer's; the agent changes it
+  freely; kit updates are offered, never pushed. **Logic is Elixir** in the
+  customer's app. **The customer owns the brand** (theme tokens, logo).
+- **One brain**: the Chat tab, the website bubble and the phone reach the
+  same Sagents bot.
+- **What the agent reads, and how:** the customer's data through the
+  VoipAppz API's MCP (read-only, today); the kit's components through a
+  shadcn registry and its MCP (with the kit); the admin app (`voipappz/app`)
+  at most as read-only reference for our own team, never for a customer and
+  never as a dependency. Nothing in a customer app is imported from the
+  admin app, which stays MUI.
+
 ## Layout
 
 | Path | What |
