@@ -27,9 +27,10 @@ plan is `docs/appz-plan.md`; read it before proposing anything. In short:
 
 Today Builder still runs a local folder (`builder.toml`: `make setup`,
 `make dev PORT=…`, health, `stop`, `[[actions]]`), shows the appz's first
-page (Connectix's Calls dashboard at `/app/dashboard`) and trades the
-user's sign-in at `/auth/login` for the mothership tokens that page reads
-calls with (`MOTHERSHIP_API_URL/_API_TOKEN/_REFRESH_TOKEN`, handed to the
+page (Connectix's Calls dashboard at `/app/dashboard`) and hands the
+user's sign-in to that page as the API's Basic credential
+(`MOTHERSHIP_API_URL` and `MOTHERSHIP_API_BASIC`; `/auth/login` mails a
+one-time code, so no token is traded), given to the
 appz's `make dev` only, not to setup, actions or the agent's process; the
 agent edits that appz's code, so see `docs/demo.md` on what this is not);
 the cloud dev

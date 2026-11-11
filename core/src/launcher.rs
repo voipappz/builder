@@ -186,21 +186,14 @@ pub(crate) fn wsl_env_appz(env: &HashMap<String, String>) -> HashMap<String, Str
 }
 
 /// What Builder hands the appz's `make dev` and nothing else.
-pub(crate) const APPZ_SECRETS: [&str; 3] = ["MOTHERSHIP_API_URL", "MOTHERSHIP_API_TOKEN", "MOTHERSHIP_REFRESH_TOKEN"];
+pub(crate) const APPZ_SECRETS: [&str; 4] = ["MOTHERSHIP_API_URL", "MOTHERSHIP_API_BASIC", "MOTHERSHIP_API_TOKEN", "MOTHERSHIP_REFRESH_TOKEN"];
 
 /// The agent's environment: Builder's, without any login or token.
 pub(crate) fn agent_env_from(env: HashMap<String, String>) -> HashMap<String, String> {
     env.into_iter()
         .filter(|(k, _)| !matches!(k.as_str(), "VA_MCP_BASIC" | "TEST_EMAIL" | "TEST_PASSWORD" | "VA_TEST_OTP"
-            | "MOTHERSHIP_API_TOKEN" | "MOTHERSHIP_REFRESH_TOKEN"))
+            | "MOTHERSHIP_API_BASIC" | "MOTHERSHIP_API_TOKEN" | "MOTHERSHIP_REFRESH_TOKEN"))
         .collect()
-}
-
-/// Accounts that answered the sign-in with a one-time code: asked once per
-/// run, so a restart does not mail the user another unusable code.
-fn otp_accounts() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
-    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
-    SEEN.get_or_init(Default::default)
 }
 
 /// Whether a distro's `uname -r` is a WSL2 kernel ("…-microsoft-standard-WSL2");
@@ -1026,34 +1019,21 @@ pub async fn start_with_api_credential(settings: &Settings, login: Option<ApiLog
 
     let appz = appz_only(settings);
     // The appz's pages read the mothership (its calls, …) as the signed-in
-    // user: the sign-in is traded for tokens that go to the appz's own
+    // user: the sign-in goes to the appz's own
     // `make dev` and to nothing else Builder runs (not setup, not actions,
     // not the agent's process). The agent edits the appz's code, so this is
     // separation of environments, not a wall: see docs/demo.md. A remote
     // appz runs nothing here, so there is no process to hand them to.
     let mut appz_secrets: HashMap<String, String> = HashMap::new();
     let remote_appz = settings.bot_dir.as_deref().and_then(|dir| crate::bot::read_spec(dir).ok()).is_some_and(|spec| spec.url.is_some());
-    if let (Some(l), Some(api), true, false) = (&login, &api_url, appz, remote_appz) {
-        let account = format!("{api} {}", l.email.trim());
-        if otp_accounts().lock().unwrap().contains(&account) {
-            progress("Your account asks for a one-time code at sign-in; the appz's pages will say they are not connected until a token is set in its .env.");
-        } else {
-            match mothership_tokens(api, &l.email, &l.password).await {
-                Ok(Some((access, refresh))) => {
-                    appz_secrets.insert("MOTHERSHIP_API_URL".into(), api.clone());
-                    appz_secrets.insert("MOTHERSHIP_API_TOKEN".into(), access);
-                    if !refresh.is_empty() {
-                        appz_secrets.insert("MOTHERSHIP_REFRESH_TOKEN".into(), refresh);
-                    }
-                    progress("Signed in for the appz's pages: they read your VoipAppz calls.");
-                }
-                Ok(None) => {
-                    otp_accounts().lock().unwrap().insert(account);
-                    progress("Your account asks for a one-time code at sign-in; the appz's pages will say they are not connected until a token is set in its .env.");
-                }
-                Err(why) => progress(&format!("The appz's pages get no VoipAppz token ({why}); they will say they are not connected.")),
-            }
-        }
+    // The sign-in itself, as the Basic credential the API takes on every
+    // /api route (the one Builder's own API tools use): no one-time code, no
+    // expiry, no request made here. `/auth/login` cannot serve this: it
+    // mails a code unless the device is trusted.
+    if let (Some(basic), Some(api), true, false) = (&basic, &api_url, appz, remote_appz) {
+        appz_secrets.insert("MOTHERSHIP_API_URL".into(), api.clone());
+        appz_secrets.insert("MOTHERSHIP_API_BASIC".into(), basic.clone());
+        progress("The appz's pages read your VoipAppz calls with your sign-in.");
     }
     let workspace = match (&settings.bot_dir, appz) {
         (Some(dir), true) => dir.clone(),
@@ -1403,12 +1383,13 @@ mod tests {
         let env = HashMap::from([("PATH".to_string(), "/usr/bin".to_string()), ("TEST_EMAIL".into(), "a@b".into()),
             ("WINDIR".into(), r"C:\Windows".into()), ("ANTHROPIC_MODEL".into(), "x".into()),
             ("MOTHERSHIP_API_TOKEN".into(), "t".into()), ("MOTHERSHIP_REFRESH_TOKEN".into(), "r".into()),
-            ("MOTHERSHIP_API_URL".into(), "https://switch.test".into()), ("VA_TEST_OTP".into(), "1".into())]);
+            ("MOTHERSHIP_API_URL".into(), "https://switch.test".into()), ("VA_TEST_OTP".into(), "1".into()),
+            ("MOTHERSHIP_API_BASIC".into(), "b".into())]);
         let sorted = |map: HashMap<String, String>| { let mut keys: Vec<String> = map.into_keys().collect(); keys.sort(); keys };
         // What crosses into WSL for the agent, setup and actions: no token.
         assert_eq!(sorted(wsl_env(&env)), ["ANTHROPIC_MODEL", "PATH", "TEST_EMAIL", "VA_TEST_OTP"]);
         // The appz's make dev alone also gets the mothership tokens.
-        assert_eq!(sorted(wsl_env_appz(&env)), ["ANTHROPIC_MODEL", "MOTHERSHIP_API_TOKEN", "MOTHERSHIP_API_URL", "MOTHERSHIP_REFRESH_TOKEN", "PATH", "TEST_EMAIL", "VA_TEST_OTP"]);
+        assert_eq!(sorted(wsl_env_appz(&env)), ["ANTHROPIC_MODEL", "MOTHERSHIP_API_BASIC", "MOTHERSHIP_API_TOKEN", "MOTHERSHIP_API_URL", "MOTHERSHIP_REFRESH_TOKEN", "PATH", "TEST_EMAIL", "VA_TEST_OTP"]);
         // The agent, on any system and through WSL: no login, no token.
         assert_eq!(sorted(agent_env_from(env.clone())), ["ANTHROPIC_MODEL", "MOTHERSHIP_API_URL", "PATH", "WINDIR"]);
         assert_eq!(sorted(wsl_env(&agent_env_from(env))), ["ANTHROPIC_MODEL", "PATH"]);
