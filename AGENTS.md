@@ -56,6 +56,35 @@ every proposal against the plan's three layers.
   **The customer owns the brand** (the MUI theme, logo).
 - **One brain**: the Chat tab, the website bubble and the phone reach the
   same Sagents bot.
+
+**Customizing a screen, in this order** (Builder's agent stops at the first
+that works, and never edits `voipappz/app` for one customer):
+
+1. **Props** the customer's LiveView passes (titles, labels, panels, columns).
+2. **Theme**: the customer's MUI theme, colours to per-component overrides.
+3. **Slots** the component takes (`headerActions`, `emptyState`, …).
+4. **Composition**: a new screen in the customer's folder from the building
+   blocks `voipappz/app` exports, plus the customer's own parts.
+5. **A change in `voipappz/app`** by our team, when others want it too;
+   customers take it with a newer pin.
+
+Copying a component into the customer's folder is the last resort, for
+something truly unique; the copy stops getting our fixes.
+
+**Where logic goes.** `voipappz/app` components only display: props in,
+events out (`onRowClick`, `onAction(name, item)`, …, wired to `pushEvent`).
+The logic is the customer's Elixir:
+
+- **The customer's LiveViews**: what data (the VoipAppz API, their own
+  sources), what an event does (`handle_event`: open their CRM, start a
+  flow, call back), when the screen updates (timers, live events).
+- **The engine's extension points**: flows, the bot's tools and skills,
+  webhook handlers; logic for every channel, not one screen.
+- **A thin React wrapper** in the customer's folder only for logic that
+  must run in the browser (local state, a typing filter).
+
+A component missing an event the customer needs is a change for
+`voipappz/app`, not a copy.
 - **What the agent reads**: the customer's data through the VoipAppz API's
   MCP (read-only); the engine's running state through the dev MCP
   (`voipappz-*` at `/voipappz/mcp`). `voipappz/app` stays ours: the agent
