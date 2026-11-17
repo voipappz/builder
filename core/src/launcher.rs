@@ -711,7 +711,7 @@ async fn start_bot(dir: &Path, env: &HashMap<String, String>, secrets: HashMap<S
             && !k.starts_with("ANTHROPIC_") && !k.starts_with("CLAUDE_"))
         .map(|(k, v)| (k.clone(), v.clone())).collect();
     let bot = crate::bot::Bot::new(spec, dir.to_path_buf(), port, distro, env, secrets);
-    progress(&format!("{}: {} in {}", if bot.spec.kind == Kind::Product { "Product" } else { "Voice bot" },
+    progress(&format!("{}: {} in {}", match bot.spec.kind { Kind::Product => "Product", Kind::App => "App", Kind::Bot => "Voice bot" },
         bot.spec.name, dir.display()));
     bot.check_requires().await?;
     let setup = bot.setup_if_needed();
@@ -729,6 +729,7 @@ async fn start_bot(dir: &Path, env: &HashMap<String, String>, secrets: HashMap<S
         }
     };
     progress(&match (health.ready, bot.spec.kind) {
+        (_, Kind::App) => format!("The app is running; its window opens on this computer. Its log: {}", bot.log_path().display()),
         (true, _) if bot.remote() => format!("The {noun} answers at {}.", bot.origin()),
         (true, _) => format!("The {noun} answers on port {port}."),
         (false, Kind::Bot) => format!("The bot runs on port {port} but is not ready for calls: put OPENAI_API_KEY in {}.", dir.join(".env").display()),
