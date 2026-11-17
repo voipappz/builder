@@ -106,3 +106,50 @@ class SipCoreTest {
         assertEquals(600, registration.grantedExpires(SipResponse(200, "OK", emptyList())))
     }
 }
+
+/** A switch in memory: challenges the first REGISTER, accepts the right digest, refuses a wrong one. */
+private class FakeSwitch(private val password: String) : SipTransport {
+    private val out = kotlinx.coroutines.flow.MutableSharedFlow<SipMessage>(extraBufferCapacity = 16)
+    override val incoming = out
+    val received = mutableListOf<SipRequest>()
+
+    override suspend fun send(message: SipMessage) {
+        val request = message as SipRequest
+        received += request
+        val echo = listOf("Call-ID" to request.callId!!, "CSeq" to request.header("CSeq")!!)
+        val auth = request.header("Authorization")
+        val reply = if (auth == null) {
+            SipResponse(401, "Unauthorized", echo + ("WWW-Authenticate" to "Digest realm=\"pbx.example.com\", nonce=\"n1\", qop=\"auth\""))
+        } else {
+            val p = DigestChallenge.parseParams(auth.removePrefix("Digest"))
+            val expected = Digest.authorization(DigestChallenge("pbx.example.com", "n1", qop = listOf("auth")),
+                request.method, request.uri, p["username"]!!, password, p["cnonce"]!!, p["nc"]!!.toInt(16))
+            if (expected == auth) SipResponse(100, "Trying", echo).also { out.emit(it) }
+                .let { SipResponse(200, "OK", echo + ("Contact" to request.header("Contact")!!)) }
+            else SipResponse(401, "Unauthorized", echo + ("WWW-Authenticate" to "Digest realm=\"pbx.example.com\", nonce=\"n1\", qop=\"auth\""))
+        }
+        out.emit(reply)
+    }
+
+    override suspend fun close() {}
+}
+
+class SipClientTest {
+    private val account = SipAccount(username = "1001", password = "secret", domain = "pbx.example.com")
+
+    @Test
+    fun registersAfterOneChallenge() = kotlinx.coroutines.test.runTest {
+        val switch = FakeSwitch(password = "secret")
+        val result = SipClient(switch).register(Registration(account, random = Random(5)))
+        assertEquals(RegisterResult.Registered(600), result)
+        assertEquals(2, switch.received.size)
+    }
+
+    @Test
+    fun aWrongPasswordIsRefusedWithoutLooping() = kotlinx.coroutines.test.runTest {
+        val switch = FakeSwitch(password = "other")
+        val result = SipClient(switch).register(Registration(account, random = Random(6)))
+        assertEquals(RegisterResult.Refused(401, "Unauthorized"), result)
+        assertEquals(2, switch.received.size)
+    }
+}
