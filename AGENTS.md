@@ -102,9 +102,9 @@ A component missing an event the customer needs is a change for
 | `core/build.rs` | Embeds `client/` (the chat bundle) into the binary |
 | `cli/` | `voipappz-builder` CLI (same start flow; used by the e2e scripts) |
 | `desktop/` | Tauri tray app; onboarding page `desktop/ui/index.html` |
-| `client.ref` | voipappz/app ref the chat is built from (`main`) |
+| `client.ref` | connectix-io/app ref the chat is built from (`main`) |
 | `client/` | Built chat (gitignored), from `scripts/client.sh` |
-| `scripts/client.sh` | Clones voipappz/app at `client.ref` into `.client-app/`, runs `npm run build:builder`, copies `dist-builder` to `client/` |
+| `scripts/client.sh` | Clones connectix-io/app at `client.ref` into `.client-app/`, runs `npm run build:builder`, copies `dist-builder` to `client/` |
 | `scripts/e2e.sh` | Old app-path end to end (React app + `make dev`) |
 | `scripts/e2e-appz.sh`, `scripts/e2e-appz-page.cjs` | Appz end to end: Connectix only, the page checked in Chromium |
 | `contracts/` | ACP/MCP contract tests (Node) |
