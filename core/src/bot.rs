@@ -31,18 +31,21 @@ use tracing::warn;
 use crate::command::{create_shell_command, spawn_command, ChildProcess};
 use crate::launcher::{command_path, run_on, sh_quote, state_dir, wsl_env_appz};
 
-/// What a folder is: a voice bot, or a product (Connectix, the bot brain).
+/// What a folder is: a voice bot, a product (Connectix, the bot brain), or a
+/// native app (a program with its own window and no web address, such as the
+/// Rust phone): Builder runs its `make dev` and takes "running" for "up".
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     Bot,
     Product,
+    App,
 }
 
 impl Kind {
     /// The word for it in messages: "bot" or "product".
     pub fn noun(self) -> &'static str {
-        match self { Kind::Bot => "bot", Kind::Product => "product" }
+        match self { Kind::Bot => "bot", Kind::Product => "product", Kind::App => "app" }
     }
 }
 
@@ -115,9 +118,9 @@ struct BuilderToml {
 pub fn read_spec(dir: &Path) -> Result<BotSpec, String> {
     let path = dir.join("builder.toml");
     let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("{}: {e}. A bot folder has a builder.toml with kind = \"bot\" or \"product\".", path.display()))?;
+        .map_err(|e| format!("{}: {e}. The folder has a builder.toml with kind = \"bot\", \"product\" or \"app\".", path.display()))?;
     let mut spec = toml::from_str::<BuilderToml>(&text)
-        .map_err(|e| format!("{}: {e}. A bot folder says kind = \"bot\" or \"product\".", path.display()))?.builder;
+        .map_err(|e| format!("{}: {e}. The folder says kind = \"bot\", \"product\" or \"app\".", path.display()))?.builder;
     let paths = [Some(&spec.health), Some(&spec.socket), spec.mcp.as_ref(), spec.page.as_ref()];
     if paths.into_iter().flatten().any(|p| !p.starts_with('/')) {
         return Err(format!("{}: health, socket, mcp and page are paths starting with /", path.display()));
@@ -311,6 +314,12 @@ impl Bot {
     }
 
     pub async fn health(&self) -> Health {
+        // A native app has no address to ask: it is up while its process runs.
+        if self.spec.kind == Kind::App && !self.remote() {
+            let mut process = self.process.lock().await;
+            let running = process.as_mut().is_some_and(|child| matches!(child.child.try_wait(), Ok(None)));
+            return Health { up: running, ready: running };
+        }
         let client = match reqwest::Client::builder().timeout(Duration::from_secs(2)).build() {
             Ok(c) => c,
             Err(_) => return Health { up: false, ready: false },
@@ -366,6 +375,11 @@ impl Bot {
             return Err("Builder is stopping.".into());
         }
 
+        // A native app counts as up while it runs, so give a `make dev` that
+        // fails at once (no make target, a missing tool) the time to do so.
+        if self.spec.kind == Kind::App {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
         let deadline = tokio::time::Instant::now() + Duration::from_secs(self.spec.start_timeout);
         let mut next_update = tokio::time::Instant::now();
         loop {
@@ -644,8 +658,10 @@ mod tests {
     fn reads_a_bot_folder() {
         let dir = tempfile::tempdir().unwrap();
         assert!(read_spec(dir.path()).is_err());
-        std::fs::write(dir.path().join("builder.toml"), "[builder]\nkind = \"app\"\nname = \"x\"\n").unwrap();
-        assert!(read_spec(dir.path()).unwrap_err().contains("kind = \"bot\" or \"product\""));
+        std::fs::write(dir.path().join("builder.toml"), "[builder]\nkind = \"website\"\nname = \"x\"\n").unwrap();
+        assert!(read_spec(dir.path()).unwrap_err().contains("kind = \"bot\", \"product\" or \"app\""));
+        std::fs::write(dir.path().join("builder.toml"), "[builder]\nkind = \"app\"\nname = \"Phone\"\n").unwrap();
+        assert_eq!(read_spec(dir.path()).unwrap().kind, Kind::App);
         std::fs::write(dir.path().join("builder.toml"),
             "[builder]\nkind = \"bot\"\nname = \"Noa\"\nport = 8091\nsetup_done = \".env\"\n").unwrap();
         let spec = read_spec(dir.path()).unwrap();
@@ -717,6 +733,31 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         port
+    }
+
+    /// A native app has no address: it is up while its `make dev` runs, and
+    /// one that fails at once is reported with its log.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_native_app_is_up_while_it_runs() {
+        let app = |dir: &Path, port| {
+            let spec = BotSpec { kind: Kind::App, name: "Phone".into(), port, health: "/healthz".into(),
+                socket: "/earshot".into(), setup_done: None, start_timeout: 5, stop: None, mcp: None, page: None,
+                requires: vec![], actions: vec![], url: None };
+            let env = HashMap::from([("PATH".to_string(), std::env::var("PATH").unwrap())]);
+            Bot::new(spec, dir.to_path_buf(), port, None, env, HashMap::new())
+        };
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Makefile"), "dev:\n\tsleep 30\n").unwrap();
+        let bot = app(dir.path(), 43911);
+        assert!(!bot.health().await.up, "not started yet");
+        assert!(bot.start(&|_| {}).await.unwrap().up);
+        bot.stop().await;
+        assert!(!bot.health().await.up, "stopped");
+
+        std::fs::write(dir.path().join("Makefile"), "dev:\n\t@echo no compiler here; exit 3\n").unwrap();
+        let error = app(dir.path(), 43912).start(&|_| {}).await.unwrap_err();
+        assert!(error.contains("no compiler here"), "{error}");
     }
 
     #[tokio::test]

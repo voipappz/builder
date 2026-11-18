@@ -64,7 +64,8 @@ no Node itself; everything Node is the app's Makefile.
   it edit inside the worktree without asking. A request to edit, delete or
   move a file outside the worktree, inside its `.git`, or through a symlink
   that leads out is refused by the server and never reaches you. Commands
-  still ask you each time.
+  still ask you each time; once approved they run as you, not in a sandbox,
+  so a command (or a build script it runs) can write outside the worktree.
 - **The API is read-only.** The agent reaches `/api/mcp` only through
   Builder's `/mcp/api`. Builder adds the login (which the agent and browser
   never see), hides tools that change the platform (marked destructive, or
