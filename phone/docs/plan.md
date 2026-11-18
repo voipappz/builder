@@ -1,7 +1,8 @@
 # VoipAppz Phone: plan
 
 Research behind it: [research-summary.md](research-summary.md); everything
-collected in [research/](research/).
+collected in [research/](research/). Where everything is and what is next:
+[state.md](state.md).
 
 The app's design (screens, look, flows) is open for discussion; the gates
 below are about making calls work first.

@@ -1,0 +1,43 @@
+name: Phone
+
+# The VoipAppz Phone app (phone/): the SIP tests and the Android app, with the
+# tools from phone/mise.toml. Runs only when phone/ or this file changes.
+on:
+  push:
+    branches: [main]
+    paths: ['phone/**', '.github/workflows/phone.yml']
+  pull_request:
+    paths: ['phone/**', '.github/workflows/phone.yml']
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: phone
+
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+        with:
+          working_directory: phone
+      - name: Android SDK packages
+        run: mise run android-sdk
+      - uses: gradle/actions/setup-gradle@v4
+      - name: SIP tests
+        run: make test
+      - name: Android app
+        run: make apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voipappz-phone-debug-apk
+          path: phone/androidApp/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sip-test-results
+          path: phone/sip/build/test-results/
+          if-no-files-found: ignore
