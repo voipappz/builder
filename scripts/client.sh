@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds Builder's chat client from connectix-io/app (public) and
+# Builds Builder's chat client from voipappz/app (a private repository) and
 # puts it in client/, which core/build.rs embeds into the binary.
 #
 #   scripts/client.sh                # the ref in client.ref
@@ -17,11 +17,11 @@ if [ -n "${APP_DIR:-}" ]; then
 else
   app="$root/.client-app"
   if [ ! -d "$app/.git" ]; then
-    git clone --quiet --filter=blob:none "${APP_REPO:-https://github.com/connectix-io/app.git}" "$app"
+    git clone --quiet --filter=blob:none "${APP_REPO:-git@github.com:voipappz/app.git}" "$app"
   fi
   git -C "$app" fetch --quiet origin "$ref"
   git -C "$app" checkout --quiet --detach FETCH_HEAD
-  echo "connectix-io/app at $(git -C "$app" rev-parse --short HEAD) ($ref)"
+  echo "voipappz/app at $(git -C "$app" rev-parse --short HEAD) ($ref)"
 fi
 
 (cd "$app" && npm ci --no-audit --no-fund && npm run build:builder)
