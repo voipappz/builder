@@ -74,8 +74,8 @@ platforms work.
 | **3. Reliable reload** | Rebuild, reinstall and relaunch on every change, with the phone's log (logcat) in Builder's log | A change shows within a minute, every time |
 | **4. Platform picker** | Switch between projects (Web = connectix-io/app, Android = `phone/`), one project per repo, one agent per project | Two working platforms, switched in one click |
 | **5. Call shortcut** | A button to place a test call, once the same APK already calls on its own (phone gate 2) | Builder only installs, launches and shows logs; the phone keeps its own login |
-| **6. iOS build and test** | Build and run tests on a named Mac, logs back in Builder; the simulator stays on the Mac's screen | One iOS test run from Builder |
-| **7. iOS viewing** | The simulator shown in Builder (an experiment) | Usable latency |
+| **6. iOS build and test** | Builder shows the iOS build and test results from CI's macOS runner (no Mac on the PC) | The iOS result of each change visible in Builder |
+| **7. iOS viewing** | The simulator of a cloud Mac streamed into Builder's pane (an experiment, if wanted) | Usable latency |
 | **8. Desktop** | The desktop phone as another platform | After the mobile app is in daily use |
 
 ## Not in scope now
