@@ -17,21 +17,23 @@ not wired in yet). Plan: [docs/plan.md](docs/plan.md). Research:
 
 ## What you need
 
-- JDK 17, the Android SDK (platform 35 and platform-tools), and a Gradle home.
-  The Makefile looks in `~/android/jdk`, `~/android/sdk` and `~/android/gradle`;
-  set `JAVA_HOME`, `ANDROID_HOME` or `GRADLE_USER_HOME` to use others.
-- `local.properties` with `sdk.dir=<your Android SDK>` (not committed).
+- [mise](https://mise.jdx.dev). `make setup` (or `mise install` then
+  `mise run android-sdk`) installs Java 17 (Temurin) and the Android SDK with
+  platform 35, build tools and platform-tools, as listed in `mise.toml`. Every
+  `make` command runs through `mise exec`, so mise does not need to be
+  activated in your shell.
 - For iPhone: a Mac with Xcode.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `make setup` | First run: downloads Gradle and the libraries, runs the tests |
+| `make setup` | First run: installs the tools with mise, then Gradle and the libraries; runs the tests |
 | `make test` | The SIP tests (desktop JVM) |
 | `make dev` | Re-runs the tests on every change (what VoipAppz Builder runs) |
 | `make apk` | Builds the Android app: `androidApp/build/outputs/apk/debug/androidApp-debug.apk` |
 | `make install` | Installs it on an Android phone connected over USB (developer options and USB debugging on; accept the computer's prompt on the phone). Then open "VoipAppz Phone" |
+| `make probe` | Connection check with no credentials: the switch's 401 challenge, nothing answered |
 | `make registercheck` | One live REGISTER against the switch, then unregister (see below) |
 
 ## SIP accounts and secrets

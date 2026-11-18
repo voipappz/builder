@@ -1,17 +1,18 @@
 # The targets VoipAppz Builder runs (builder.toml). Builder passes PORT to
 # every target; the phone app has no web address and ignores it.
 #
-# Java, the Android SDK and Gradle's own folder: under ~/android unless set.
-JAVA_HOME ?= $(HOME)/android/jdk
-ANDROID_HOME ?= $(HOME)/android/sdk
-GRADLE_USER_HOME ?= $(HOME)/android/gradle
-export JAVA_HOME ANDROID_HOME GRADLE_USER_HOME
-GRADLE = ./gradlew --console=plain
+# Java 17 and the Android SDK come from mise (mise.toml): every command runs
+# through `mise exec`, so it works with or without mise activated in the shell.
+MISE = mise exec --
+GRADLE = $(MISE) ./gradlew --console=plain
 
 .PHONY: setup dev test registercheck probe apk install
 
-# Once: download Gradle and the libraries, compile, run the tests.
+# Once: install the tools (mise), the Android SDK packages, Gradle and the
+# libraries; compile and run the tests.
 setup:
+	mise install
+	mise run android-sdk
 	$(GRADLE) :sip:jvmTest
 	touch .builder-setup-done
 
@@ -35,7 +36,7 @@ apk:
 	@echo androidApp/build/outputs/apk/debug/androidApp-debug.apk
 
 install: apk
-	$(ANDROID_HOME)/platform-tools/adb install -r androidApp/build/outputs/apk/debug/androidApp-debug.apk
+	$(MISE) adb install -r androidApp/build/outputs/apk/debug/androidApp-debug.apk
 
 # A connection check with no credentials: one REGISTER, the switch's 401
 # challenge printed, nothing answered (no login attempt).

@@ -7,7 +7,7 @@ kind = "app"
 name = "VoipAppz Phone"
 setup_done = ".builder-setup-done"
 start_timeout = 900
-requires = ["make"]
+requires = ["make", "mise"]
 
 [[builder.actions]]
 id = "test"

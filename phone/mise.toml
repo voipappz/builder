@@ -1,0 +1,9 @@
+# The tools this app builds with. `mise install` installs them; `mise run
+# android-sdk` adds the Android SDK packages Gradle needs.
+[tools]
+java = "temurin-17"
+android-sdk = "latest"
+
+[tasks.android-sdk]
+description = "Android SDK packages: platform tools, platform 35, build tools 35"
+run = 'yes | sdkmanager --licenses > /dev/null; sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"'
