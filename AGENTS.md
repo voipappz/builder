@@ -1,5 +1,8 @@
 # AGENTS.md — VoipAppz Builder
 
+**Current state: see `CLAUDE.md`** (2026-11-18: the phone app in `phone/` is the
+focus; the appz concept below was superseded on 2026-11-17).
+
 Read this first. It is the working brief for any coding agent (and person) in
 this repo. The longer story is in `docs/appz-process.md` (decisions, status,
 session log) and `docs/how-it-works.md`.
