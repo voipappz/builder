@@ -129,7 +129,8 @@ tag; Installers publishes the release. Check that the tag's run started.
 
 - Never read or print `.env` / `.env.token` contents; never write
   credentials to the repo, docs or memory; never paste keys in chat.
-- The agent writes only inside its folder; API tools are read-only; logins
+- The agent's file edits stay inside its folder (commands it runs are not
+  sandboxed: they run as the user once approved); API tools are read-only; logins
   are filtered from the agent's (and WSL's) environment.
 - Every request needs the launch secret, a Host naming this server and, when
   present, a matching Origin. Only `GET /builder/*` (public chat files)

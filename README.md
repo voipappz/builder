@@ -204,8 +204,10 @@ reporting a problem. Closing that window leaves Builder running in the tray.
   draws the chat and holds no data logic.
 - Builder has no connection to the app's Assistant, VML or Bot code, endpoints,
   storage or libraries.
-- The agent writes code only in the app worktree; the server refuses writes
-  anywhere else.
+- The agent's file edits stay in the app worktree: the server refuses edits,
+  deletes and moves anywhere else. This is not a sandbox: a command you
+  approve, a build script or an edited Makefile runs as you and can write
+  anywhere you can.
 - The VoipAppz API is read-only for the agent: Builder proxies its MCP tools
   and refuses the ones that change the platform.
 - The default API is `https://switch.voipappz.io`; a local API
