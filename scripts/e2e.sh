@@ -6,7 +6,7 @@
 #
 #   TEST_EMAIL=… TEST_PASSWORD=… scripts/e2e.sh [work-dir]
 #
-# APP_REF picks the app branch (default main), APP_PORT the app's port
+# APP_REF picks the app branch (default main), APP_REPO the clone URL (CI: a deploy key alias), APP_PORT the app's port
 # (default 3000; an app already answering there is used instead of make dev). The CLI binary comes from
 # `cargo build`; set BUILDER_BIN to use another one.
 set -euo pipefail
@@ -27,7 +27,7 @@ state=${XDG_STATE_HOME:-$HOME/.local/state}/voipappz-builder
 
 echo "== Clone voipappz/app ($app_ref) into $work/app"
 rm -rf "$work" && mkdir -p "$work"
-git clone --quiet --branch "$app_ref" https://github.com/voipappz/app.git "$work/app"
+git clone --quiet --branch "$app_ref" "${APP_REPO:-https://github.com/voipappz/app.git}" "$work/app"
 # Builder makes its worktree from origin/main; for another branch, make it here.
 [ "$app_ref" = main ] || git -C "$work/app" worktree add --quiet -b builder/work "$work/app-builder" "origin/$app_ref"
 

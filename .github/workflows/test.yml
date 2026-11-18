@@ -40,8 +40,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # voipappz/app is private: the same read-only deploy key as e2e-appz.
+      - name: voipappz/app deploy key
+        shell: bash
+        env:
+          KEY: ${{ secrets.APP_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/voipappz-app && chmod 600 ~/.ssh/voipappz-app
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          printf 'Host github.com-app\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/voipappz-app\n  IdentitiesOnly yes\n' >> ~/.ssh/config
       - name: Clone the app, setup, dev, Builder, agent
         env:
+          APP_REPO: git@github.com-app:voipappz/app.git
           TEST_EMAIL: ${{ secrets.TEST_EMAIL }}
           TEST_PASSWORD: ${{ secrets.TEST_PASSWORD }}
           VOIPAPPZ_API_URL: ${{ secrets.VITE_API_BASE_URL }}
