@@ -41,3 +41,19 @@ jobs:
           name: sip-test-results
           path: phone/sip/build/test-results/
           if-no-files-found: ignore
+
+  # The iPhone targets build only on a Mac (on Linux they are skipped), so
+  # this job keeps iOS-only code and the Darwin dependencies honest.
+  ios:
+    runs-on: macos-14
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: iOS simulator tests and the shared framework
+        # The runner's preinstalled Android SDK lets the Android plugin configure.
+        run: ./gradlew --console=plain :sip:iosSimulatorArm64Test :shared:linkDebugFrameworkIosSimulatorArm64

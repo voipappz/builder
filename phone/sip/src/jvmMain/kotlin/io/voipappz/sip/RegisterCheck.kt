@@ -32,11 +32,20 @@ fun main() {
                 if (probe) {
                     val answer = client.probe(Registration(account, expires = 300))
                     println("✓ the switch answered: ${answer.status} ${answer.reason}")
-                    answer.header("WWW-Authenticate")?.let(DigestChallenge::parse)?.let {
-                        println("  challenge: realm=${it.realm}, algorithm=${it.algorithm}, qop=${it.qop.ifEmpty { listOf("none") }}")
-                    }
                     answer.header("User-Agent")?.let { println("  server: $it") }
-                    return@coroutineScope answer.status == 401 || answer.status == 407
+                    // Pass only with a digest challenge we can answer, read from
+                    // the header that matches the status (401 or 407).
+                    val header = when (answer.status) { 401 -> "WWW-Authenticate"; 407 -> "Proxy-Authenticate"; else -> null }
+                    val challenge = header?.let { answer.header(it) }?.let(DigestChallenge::parse)
+                    if (challenge == null) {
+                        println("✕ no digest challenge in the answer")
+                        return@coroutineScope false
+                    }
+                    val supported = challenge.algorithm.equals("MD5", ignoreCase = true) &&
+                        (challenge.qop.isEmpty() || challenge.qop.any { it.equals("auth", ignoreCase = true) })
+                    println("  challenge: realm=${challenge.realm}, algorithm=${challenge.algorithm}, qop=${challenge.qop.ifEmpty { listOf("none") }}" +
+                        if (supported) " (supported)" else " (NOT supported by our digest)")
+                    return@coroutineScope supported
                 }
                 // The browser phone asks for 300 s; the same here.
                 val registration = Registration(account, expires = 300)

@@ -4,7 +4,7 @@
 
 | What | Where | State |
 |---|---|---|
-| Phone app (Kotlin Multiplatform) | `phone/` in voipappz/builder, branch `feat/phone-app` | SIP registration code, Android test app, docs; pushed with this branch |
+| Phone app (Kotlin Multiplatform) | `phone/` in voipappz/builder `main` (PR #18, merged 2026-11-18) | SIP registration code, Android test app, docs |
 | Plan | [plan.md](plan.md) | Gates 0–8 for mobile; desktop (Rust) later |
 | Research | [research-summary.md](research-summary.md), [research/](research/) | Full report, notes, six Codex reviews, earlier findings |
 | Builder: native-app support (`kind = "app"`) | voipappz/builder, same branch | Done, tested |
@@ -13,7 +13,7 @@
 | Rust desktop phone (later) | fork `voipappz/RustSIPPhone`; local branch `builder-files` in `~/voipappz/phone-template`; copy in `~/voipappz/eval/RustSIPPhone` | Kept untouched on purpose |
 | References | `~/voipappz/eval/uvp-gb28181-sim` (parser to copy), `~/voipappz/eval/telnyx-webrtc-android` (Android call screen) | Local clones |
 | Tools | `phone/mise.toml`: Java 17 (Temurin), Android SDK | `make setup` installs them |
-| CI | `.github/workflows/phone.yml`: SIP tests and the Android app on every change to `phone/` | Runs on GitHub |
+| CI | `.github/workflows/phone.yml`: SIP tests and the Android app (Linux), iOS simulator tests and the shared framework (macOS), on every change to `phone/` | Android job green on PR #18; Builder's `e2e` and `e2e-appz` have failed on `main` since 2026-11-11 (private voipappz/app clone; page timeout), to fix |
 
 ## What was proven
 
@@ -36,6 +36,10 @@
    saved by the owner in `~/.config/voipappz-phone/test.env` (never read into
    chat); and an Android phone over USB, or the emulator after
    `sudo usermod -aG kvm $USER` and a WSL restart.
+   The app also needs, for calls: the `RECORD_AUDIO` runtime permission (and
+   `MODIFY_AUDIO_SETTINGS`); later Bluetooth, foreground-service and
+   notification permissions; on iOS the microphone usage text and CallKit and
+   background settings (Codex review of PR #18).
 4. Arrange Mac and iPhone access for gate 3.
 
 ## Open decisions for the owner
