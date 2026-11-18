@@ -729,8 +729,8 @@ async fn start_bot(dir: &Path, env: &HashMap<String, String>, secrets: HashMap<S
         }
     };
     progress(&match (health.ready, bot.spec.kind) {
-        (_, Kind::App) => format!("The app is running; its window opens on this computer. Its log: {}", bot.log_path().display()),
         (true, _) if bot.remote() => format!("The {noun} answers at {}.", bot.origin()),
+        (_, Kind::App) => format!("The app is running here (no web address to check). Its log: {}", bot.log_path().display()),
         (true, _) => format!("The {noun} answers on port {port}."),
         (false, Kind::Bot) => format!("The bot runs on port {port} but is not ready for calls: put OPENAI_API_KEY in {}.", dir.join(".env").display()),
         (false, Kind::Product) => format!("The product runs on port {port} but its health check says it is not ready; see its log."),
