@@ -6,3 +6,4 @@ local.properties
 
 # Written by `make setup` for VoipAppz Builder
 .builder-setup-done
+.kotlin/
