@@ -57,8 +57,8 @@ a change works everywhere takes longer than making it.
 | Platform | Code | How you see it | Needs |
 |---|---|---|---|
 | **Web** | connectix-io/app | The page in the pane (Builder does this today) | Nothing new |
-| **Android** | `phone/` | The emulator or a USB phone, mirrored with scrcpy (Apache-2.0): its own window first, in the pane later; plus the log | On Windows+WSL, the emulator, adb and scrcpy may run more simply on Windows than inside WSL (KVM, USB passthrough) |
-| **iOS** | `phone/` | Build, tests and logs from a named Mac first; the simulator viewed on the Mac itself | A Mac (own or rented); signing and Xcode on it |
+| **Android** | `phone/` | The Android emulator on the PC (in WSL, with KVM), shown **inside Builder's pane**: the emulator streams its screen to a web page (Google's emulator WebRTC stream, or ws-scrcpy), which the pane shows like any page; touch and keys go back. Plus the log | The PC only (no phone, no cable); the user in the `kvm` group |
+| **iOS** | `phone/` | **Cannot run on a PC:** Apple's simulator runs only on macOS. On the PC, Builder shows the iOS build and test results from CI (GitHub's macOS runner already builds and tests it); viewing the simulator inside Builder needs a remote Mac streamed into the pane, later | A cloud Mac, only for viewing |
 | **Desktop** (later) | Rust phone or Compose desktop | Its own window, plus the log | Decided after mobile |
 
 ## Releases (each one usable on its own, ordered by risk)
@@ -69,9 +69,9 @@ platforms work.
 
 | Release | You can | Done when |
 |---|---|---|
-| **1. Android loop** | Open `phone/` (one repo, today's single project); Builder runs the tests, builds, installs on one device (emulator or USB phone), launches the app and opens scrcpy **in its own window** | A chat edit is tested, installed and seen on the phone without a terminal |
-| **2. Reliable reload** | Rebuild, reinstall and relaunch on every change, with the phone's log (logcat) in Builder's log | A change shows on the phone within a minute, every time |
-| **3. Phone in the pane** | The mirrored phone inside Builder, after a spike proves embedding works (WebView/Tauri cannot simply frame a native window) | The spike passes on Windows/WSL |
+| **1. Spike: the emulator inside Builder** | Start the Android emulator on the PC and show its screen in Builder's pane through a web stream; check licences (permissive only), latency and touch | The emulator is usable inside Builder |
+| **2. Android loop** | Open `phone/` (today's single project); Builder runs the tests, builds, installs on the emulator, launches the app and shows it in the pane | A chat edit is tested, installed and seen inside Builder without a terminal |
+| **3. Reliable reload** | Rebuild, reinstall and relaunch on every change, with the phone's log (logcat) in Builder's log | A change shows within a minute, every time |
 | **4. Platform picker** | Switch between projects (Web = connectix-io/app, Android = `phone/`), one project per repo, one agent per project | Two working platforms, switched in one click |
 | **5. Call shortcut** | A button to place a test call, once the same APK already calls on its own (phone gate 2) | Builder only installs, launches and shows logs; the phone keeps its own login |
 | **6. iOS build and test** | Build and run tests on a named Mac, logs back in Builder; the simulator stays on the Mac's screen | One iOS test run from Builder |
@@ -91,16 +91,19 @@ mobile; arbitrary projects that are not VoipAppz apps.
 
 ## Risks
 
-- **iOS needs a Mac.** Without one, release 4 waits; the rest does not.
-- **Emulators in WSL** need KVM, and they are slow; a USB phone is the fallback.
+- **iOS needs a Mac.** On the PC only builds and tests (through CI); viewing waits for a cloud Mac.
+- **The emulator in WSL** needs KVM and memory; the stream into the pane is the spike's job to prove.
 - **Scope creep** back into the "customer appz" product. This plan is for
   personal use first.
 
 ## Open decisions for the owner
 
-1. **Android emulator or a USB phone first,** and whether adb, the emulator
-   and scrcpy run on Windows or inside WSL.
-2. **A Mac for iOS:** own, borrowed, or rented (for example a cloud Mac).
+Decided 2026-11-18: **everything on the PC, inside Builder** (the Android
+emulator, not a phone; iOS through CI until a Mac is wanted).
+
+1. **iOS viewing:** whether to rent a cloud Mac later, or keep iOS to CI
+   results.
+2. Which emulator stream the spike picks (Google's WebRTC stream or ws-scrcpy).
 3. Later, after two platforms work: the picker **at the top or on the side**,
    and one platform at a time or side by side.
 
