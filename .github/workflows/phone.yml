@@ -45,7 +45,7 @@ jobs:
   # The iPhone targets build only on a Mac (on Linux they are skipped), so
   # this job keeps iOS-only code and the Darwin dependencies honest.
   ios:
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
