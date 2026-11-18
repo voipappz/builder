@@ -20,7 +20,14 @@
 - The switch answers our SIP over WebSocket: `make probe` on 2026-11-18 got
   `401 Unauthorized`, realm `switch.voipappz.io`, MD5, `qop=auth` (what our digest
   supports). No login with a real extension yet.
-- 17 SIP tests pass; the Android app builds (debug, about 11 MB); the shared
+- Call signalling (`sip/.../Call.kt`) works in tests: 1001 calls 1002 through an
+  in-memory switch (challenge, ring, answer, ACK, BYE), cancel while ringing
+  (the callee answers CANCEL and 487), wrong password. Codex reviewed it
+  ([notes/codex_call_signalling_review.md](research/notes/codex_call_signalling_review.md));
+  the dispatcher, re-INVITE/OPTIONS and session timers it asks for are gate 1b.
+  A live call between two test extensions needs their passwords in
+  `~/.config/voipappz-phone/test.env`.
+- 20 SIP tests pass; the Android app builds (debug, about 11 MB); the shared
   code compiles for a native target (iPhone not built: needs a Mac).
 
 ## Next week, in order

@@ -17,8 +17,8 @@ screens. One gate at a time, screens last.
 |---|---|---|
 | 0 | SIP module is Kotlin Multiplatform; JetBrains' layout (`sip`, `shared`, `androidApp`) | Android and desktop-JVM build and test. iOS targets declared, never built (needs a Mac) |
 | 1a | **Demo 1:** a real phone registers (REGISTER, 401, digest, 200) and unregisters | Code done. `make probe` reached the switch's 401 challenge (MD5, qop=auth) on 2026-11-18; a login with a real extension is pending |
-| 1b | Staying registered: renewal, reconnect, a dispatcher for requests the switch sends | Not built |
-| 2 | **Demo 2:** a call to an echo extension with audible echo both ways (webrtc-kmp), media statistics, a second call that cleans up after the first, microphone permission | Next |
+| 1b | Staying registered: renewal, reconnect, one permanent dispatcher for requests the switch sends (by transaction and dialog, with buffered mailboxes); answer OPTIONS, re-INVITE and session refresh | Not built (Codex call review: needed before live calls) |
+| 2 | **Demo 2:** a call to an echo extension with audible echo both ways (webrtc-kmp), media statistics, a second call that cleans up after the first, microphone permission | Call signalling done in tests (`Call.kt`: 1001 calls 1002, rings, answers, hangs up; cancel both ways; wrong password). Audio next |
 | 3 | iOS on a Mac (framework links, webrtc-kmp audio, one call), and push/Core-Telecom/CallKit feasibility | Arrange Mac and iPhone access now |
 | 4 | Incoming calls, the cancel/answer race, DTMF, hold; audio routing and interruptions | |
 | 5 | Secure storage of the SIP password (Keystore, Keychain), before push (a woken app needs the credentials) | |

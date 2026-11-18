@@ -1,7 +1,10 @@
 package io.voipappz.sip
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.selects.select
@@ -68,6 +71,8 @@ class OutgoingCall(
     private var remoteTarget: String = targetUri
     private var routeSet: List<String> = emptyList()
     private val lock = Mutex()
+    /** Completes on the first provisional answer: CANCEL may only be sent after it (RFC 3261 9.1). */
+    private val provisional = CompletableDeferred<Unit>()
 
     /** True between a 2xx and the hang-up. */
     var established = false
@@ -75,9 +80,10 @@ class OutgoingCall(
 
     /**
      * Places the call and waits for its final answer. [onRinging] runs on
-     * each 180/183. A non-2xx final answer is acknowledged and returned.
+     * each 180/183, with the SDP when it carries early media (183).
+     * A non-2xx final answer is acknowledged and returned.
      */
-    suspend fun start(onRinging: (status: Int) -> Unit = {}): CallResult {
+    suspend fun start(onRinging: (status: Int, earlySdp: String?) -> Unit = { _, _ -> }): CallResult {
         var request = newInvite(authorization = null)
         var answeredChallenge = false
         while (true) {
@@ -122,9 +128,11 @@ class OutgoingCall(
 
     /**
      * Cancels the call while it rings (CANCEL, same branch and CSeq number
-     * as the INVITE). The INVITE then ends with 487, which [start] returns.
+     * as the INVITE). It waits for the first provisional answer before
+     * sending. The INVITE then ends with 487, which [start] returns.
      */
     suspend fun cancel(): Boolean {
+        withTimeout(timeoutMillis) { provisional.await() }
         val inv = invite ?: return false
         if (established) return false
         val number = inv.cseq?.first ?: return false
@@ -199,7 +207,7 @@ class OutgoingCall(
     }
 
     /** The INVITE's final response; provisional ones go to [onRinging]. */
-    private suspend fun finalResponse(request: SipRequest, onRinging: (Int) -> Unit): SipResponse =
+    private suspend fun finalResponse(request: SipRequest, onRinging: (Int, String?) -> Unit): SipResponse =
         withTimeout(timeoutMillis) {
             coroutineScope {
                 val branch = topBranch(request)
@@ -208,9 +216,10 @@ class OutgoingCall(
                         if (it !is SipResponse || it.callId != callId || it.cseq != request.cseq || topBranch(it) != branch) {
                             false
                         } else if (it.status < 200) {
-                            if (it.status == 180 || it.status == 183) onRinging(it.status)
+                            provisional.complete(Unit)
+                            if (it.status == 180 || it.status == 183) onRinging(it.status, it.body.ifEmpty { null })
                             false
-                        } else true
+                        } else { provisional.complete(Unit); true }
                     } as SipResponse
                 }
                 transport.send(request)
@@ -243,7 +252,11 @@ class OutgoingCall(
 /**
  * One incoming call (RFC 3261 UAS): built from the INVITE the switch sent.
  * Ring with [ring], then [answer] with the SDP answer from the media layer
- * (or [reject]); [awaitBye] answers the far end's hang-up.
+ * (or [reject]); [awaitCancel] answers the caller giving up while it rings,
+ * [awaitBye] the far end's hang-up.
+ *
+ * Each await subscribes when called: start it before the step that can
+ * trigger the message. (A permanent dispatcher comes with gate 1b.)
  */
 class IncomingCall(
     val invite: SipRequest,
@@ -262,16 +275,43 @@ class IncomingCall(
 
     suspend fun ring() = transport.send(response(180, "Ringing"))
 
-    /** Answers with [answer] (SDP) and waits for the ACK. */
+    /**
+     * Answers with [answer] (SDP) and waits for the ACK, sending the 200
+     * again (500 ms, doubling to 4 s) until it comes (RFC 3261 13.3.1.4).
+     */
     suspend fun answer(answer: String, timeoutMillis: Long = 32_000): Boolean = coroutineScope {
+        val number = invite.cseq?.first
         val ack = async(start = CoroutineStart.UNDISPATCHED) {
-            transport.incoming.first { it is SipRequest && it.method == "ACK" && it.callId == callId }
+            transport.incoming.first { it is SipRequest && it.method == "ACK" && it.callId == callId && it.cseq?.first == number }
         }
-        transport.send(response(200, "OK", body = answer, extra = listOf("Contact" to contact, "Content-Type" to "application/sdp")))
-        runCatching { withTimeout(timeoutMillis) { ack.await() } }.isSuccess
+        val ok = response(200, "OK", body = answer, extra = listOf("Contact" to contact, "Content-Type" to "application/sdp"))
+        val resend = launch {
+            var wait = 500L
+            while (true) { transport.send(ok); delay(wait); wait = minOf(wait * 2, 4_000) }
+        }
+        val acked = runCatching { withTimeout(timeoutMillis) { ack.await() } }.isSuccess
+        resend.cancel()
+        acked
     }
 
     suspend fun reject(status: Int = 486, reason: String = "Busy Here") = transport.send(response(status, reason))
+
+    /**
+     * Waits for the caller's CANCEL (the call stops ringing): confirms it
+     * with 200 and ends the INVITE with 487 (RFC 3261 9.2).
+     */
+    suspend fun awaitCancel(timeoutMillis: Long = 3_600_000): Boolean {
+        val cancel = runCatching {
+            withTimeout(timeoutMillis) {
+                transport.incoming.first {
+                    it is SipRequest && it.method == "CANCEL" && it.callId == callId && topBranch(it) == topBranch(invite)
+                } as SipRequest
+            }
+        }.getOrNull() ?: return false
+        transport.send(echo(cancel, 200, "OK"))
+        transport.send(response(487, "Request Terminated"))
+        return true
+    }
 
     /** Waits for the far end's BYE and confirms it with 200. */
     suspend fun awaitBye(timeoutMillis: Long = 3_600_000): Boolean {
@@ -280,11 +320,16 @@ class IncomingCall(
                 transport.incoming.first { it is SipRequest && it.method == "BYE" && it.callId == callId } as SipRequest
             }
         }.getOrNull() ?: return false
-        transport.send(SipResponse(200, "OK", listOf(
-            "Via" to bye.header("Via")!!, "To" to bye.header("To")!!, "From" to bye.header("From")!!,
-            "Call-ID" to callId, "CSeq" to bye.header("CSeq")!!, "User-Agent" to userAgent)))
+        transport.send(echo(bye, 200, "OK"))
         return true
     }
+
+    /** A response to a non-INVITE [request]: all its Vias, To, From, Call-ID, CSeq. */
+    private fun echo(request: SipRequest, status: Int, reason: String) = SipResponse(status, reason,
+        request.headers("Via").map { "Via" to it } + listOf(
+            "To" to request.header("To")!!.let { if (tagOf(it) == null) "$it;tag=$localTag" else it },
+            "From" to request.header("From")!!, "Call-ID" to callId,
+            "CSeq" to request.header("CSeq")!!, "User-Agent" to userAgent))
 
     /** A response to the INVITE: its Vias, From, Call-ID and CSeq, our To tag. */
     private fun response(status: Int, reason: String, body: String = "", extra: List<Pair<String, String>> = emptyList()): SipResponse {

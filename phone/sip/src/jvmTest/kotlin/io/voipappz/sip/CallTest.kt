@@ -57,10 +57,7 @@ private class FakeCallSwitch(private val passwords: Map<String, String>) {
                     // An ACK in the INVITE's own transaction (for a 401 or 487) ends here; the 2xx ACK goes on.
                     "ACK" -> if (invite != null && topBranch(message) != topBranch(invite!!)) phones[callee]!!.deliver(message)
                     "BYE" -> phones[if (from == caller) callee!! else caller!!]!!.deliver(message)
-                    "CANCEL" -> {
-                        reply(from, message, 200, "OK")
-                        reply(from, invite!!, 487, "Request Terminated")
-                    }
+                    "CANCEL" -> phones[callee]!!.deliver(message)
                 }
             }
         }
@@ -106,7 +103,7 @@ class CallTest {
 
         val call = OutgoingCall(alice, "1002", "v=0 (offer from 1001)", phoneA, Random(1))
         var rang = false
-        val result = call.start { rang = true }
+        val result = call.start { _, _ -> rang = true }
 
         assertEquals(CallResult.Answered("v=0 (answer from 1002)"), result)
         assertTrue(rang, "1001 heard it ringing")
@@ -139,17 +136,22 @@ class CallTest {
         val phoneB = switch.phone("1002")
         val receiver = async(start = CoroutineStart.UNDISPATCHED) {
             val invite = phoneB.incoming.first { it is SipRequest && it.method == "INVITE" } as SipRequest
-            IncomingCall(invite, phoneB, Random(4)).ring() // rings, never answers
+            val incoming = IncomingCall(invite, phoneB, Random(4))
+            val cancelled = async(start = CoroutineStart.UNDISPATCHED) { incoming.awaitCancel() }
+            incoming.ring() // rings, never answers
+            cancelled.await()
         }
 
         val call = OutgoingCall(alice, "1002", "v=0", phoneA, Random(3))
         val ringing = CompletableDeferred<Unit>()
-        val result = async(start = CoroutineStart.UNDISPATCHED) { call.start { ringing.complete(Unit) } }
+        val result = async(start = CoroutineStart.UNDISPATCHED) { call.start { _, _ -> ringing.complete(Unit) } }
         ringing.await()
         assertTrue(call.cancel())
         assertEquals(CallResult.Failed(487, "Request Terminated"), result.await())
         assertFalse(call.established)
-        receiver.await()
+        assertTrue(receiver.await(), "1002 got the CANCEL and ended the INVITE with 487")
+        assertEquals(listOf("1001→ INVITE", "switch→1001 401", "1001→ ACK", "1001→ INVITE",
+            "1002→ 180", "1001→ CANCEL", "1002→ 200", "1002→ 487", "1001→ ACK"), switch.log)
         // CANCEL uses the INVITE's branch and CSeq number; the 487 is acknowledged.
         val sent = phoneA.sent.filterIsInstance<SipRequest>()
         val invite = sent.last { it.method == "INVITE" }
