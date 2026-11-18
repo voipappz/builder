@@ -8,7 +8,7 @@ GRADLE_USER_HOME ?= $(HOME)/android/gradle
 export JAVA_HOME ANDROID_HOME GRADLE_USER_HOME
 GRADLE = ./gradlew --console=plain
 
-.PHONY: setup dev test registercheck apk install
+.PHONY: setup dev test registercheck probe apk install
 
 # Once: download Gradle and the libraries, compile, run the tests.
 setup:
@@ -36,3 +36,8 @@ apk:
 
 install: apk
 	$(ANDROID_HOME)/platform-tools/adb install -r androidApp/build/outputs/apk/debug/androidApp-debug.apk
+
+# A connection check with no credentials: one REGISTER, the switch's 401
+# challenge printed, nothing answered (no login attempt).
+probe:
+	SIP_PROBE=1 SIP_WSS=$${SIP_WSS:-wss://switch.voipappz.io:8443} $(GRADLE) -q :sip:registerCheck

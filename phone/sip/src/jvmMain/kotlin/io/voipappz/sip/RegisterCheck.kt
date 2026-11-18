@@ -13,8 +13,11 @@ import kotlin.system.exitProcess
 fun main() {
     val env = System.getenv()
     val wss = env["SIP_WSS"] ?: fail("set SIP_WSS, e.g. wss://switch.example.com:8443")
-    val user = env["SIP_USER"] ?: fail("set SIP_USER")
-    val password = env["SIP_PASSWORD"] ?: fail("set SIP_PASSWORD")
+    // SIP_PROBE=1: one REGISTER without credentials; print the switch's answer
+    // (normally its 401 challenge) and stop. No password, no login attempt.
+    val probe = env["SIP_PROBE"] == "1"
+    val user = env["SIP_USER"] ?: if (probe) "probe" else fail("set SIP_USER")
+    val password = env["SIP_PASSWORD"] ?: if (probe) "" else fail("set SIP_PASSWORD")
     val domain = env["SIP_DOMAIN"] ?: java.net.URI(wss).host
     val account = SipAccount(user, password, domain)
 
@@ -26,6 +29,15 @@ fun main() {
                 transport = WebSocketTransport.connect(http, wss, this)
                 println("✓ WebSocket open: $wss (subprotocol sip)")
                 val client = SipClient(transport)
+                if (probe) {
+                    val answer = client.probe(Registration(account, expires = 300))
+                    println("✓ the switch answered: ${answer.status} ${answer.reason}")
+                    answer.header("WWW-Authenticate")?.let(DigestChallenge::parse)?.let {
+                        println("  challenge: realm=${it.realm}, algorithm=${it.algorithm}, qop=${it.qop.ifEmpty { listOf("none") }}")
+                    }
+                    answer.header("User-Agent")?.let { println("  server: $it") }
+                    return@coroutineScope answer.status == 401 || answer.status == 407
+                }
                 // The browser phone asks for 300 s; the same here.
                 val registration = Registration(account, expires = 300)
                 val result = try {

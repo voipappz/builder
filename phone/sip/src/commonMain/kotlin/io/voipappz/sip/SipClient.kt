@@ -140,6 +140,14 @@ class SipClient(private val transport: SipTransport, private val timeoutMillis: 
         }
 
     /**
+     * Sends one REGISTER without credentials and returns the switch's first
+     * final answer (normally a 401 challenge), without answering it: a
+     * connection check that makes no login attempt.
+     */
+    suspend fun probe(registration: Registration): SipResponse =
+        registering.withLock { exchange(registration, registration.register()) }
+
+    /**
      * One client transaction: the final response whose top Via branch,
      * Call-ID and CSeq match the request (1xx skipped). Fails at once if the
      * connection closes.
