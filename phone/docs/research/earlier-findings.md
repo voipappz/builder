@@ -86,4 +86,4 @@ web page), no native SIP libraries (no baresip, PJSIP, Linphone), easy to develo
 - `phone/shared`, `phone/androidApp`: JetBrains' Kotlin Multiplatform layout;
   the Android app builds (11 MB) with a sign-in screen.
 - Builder runs the phone app (`phone/builder.toml`, `kind = "app"`).
-- Everything is on branch `feat/phone-app` in `~/voipappz/builder-native`, not pushed.
+- Merged into voipappz/builder `main` on 2026-11-18 (PRs #18, #19).
