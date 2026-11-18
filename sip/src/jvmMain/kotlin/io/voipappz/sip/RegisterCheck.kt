@@ -1,5 +1,6 @@
 package io.voipappz.sip
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlin.system.exitProcess
@@ -20,28 +21,38 @@ fun main() {
     val ok = runBlocking {
         coroutineScope {
             val http = WebSocketTransport.httpClient()
-            val transport = try {
-                WebSocketTransport.connect(http, wss, this)
+            var transport: WebSocketTransport? = null
+            try {
+                transport = WebSocketTransport.connect(http, wss, this)
+                println("✓ WebSocket open: $wss (subprotocol sip)")
+                val client = SipClient(transport)
+                // The browser phone asks for 300 s; the same here.
+                val registration = Registration(account, expires = 300)
+                val result = try {
+                    client.register(registration)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    RegisterResult.Refused(0, "no answer: ${e.message}")
+                }
+                when (result) {
+                    is RegisterResult.Registered -> println("✓ registered $user@$domain for ${result.expires}s")
+                    is RegisterResult.Refused -> println("✕ refused: ${result.status} ${result.reason}")
+                }
+                if (result is RegisterResult.Registered) {
+                    val off = runCatching { client.register(registration, expires = 0) }.getOrNull()
+                    println(if (off is RegisterResult.Registered) "✓ unregistered" else "! unregister got $off")
+                }
+                result is RegisterResult.Registered
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 println("✕ could not open $wss: ${e.message}")
+                false
+            } finally {
+                transport?.close()
                 http.close()
-                return@coroutineScope false
             }
-            println("✓ WebSocket open: $wss (subprotocol sip)")
-            val client = SipClient(transport)
-            val registration = Registration(account, expires = 60)
-            val result = runCatching { client.register(registration) }.getOrElse { RegisterResult.Refused(0, "no answer: ${it.message}") }
-            when (result) {
-                is RegisterResult.Registered -> println("✓ registered $user@$domain for ${result.expires}s")
-                is RegisterResult.Refused -> println("✕ refused: ${result.status} ${result.reason}")
-            }
-            if (result is RegisterResult.Registered) {
-                val off = runCatching { client.register(registration, expires = 0) }.getOrNull()
-                println(if (off is RegisterResult.Registered) "✓ unregistered" else "! unregister got $off")
-            }
-            transport.close()
-            http.close()
-            result is RegisterResult.Registered
         }
     }
     exitProcess(if (ok) 0 else 1)

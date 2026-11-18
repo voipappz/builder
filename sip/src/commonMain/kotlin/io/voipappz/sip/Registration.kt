@@ -9,7 +9,10 @@ data class SipAccount(
     /** The SIP domain, e.g. `switch.voipappz.io`. */
     val domain: String,
     val displayName: String? = null,
-)
+) {
+    /** Without the password, so a log line or a crash report never carries it. */
+    override fun toString() = "SipAccount(username=$username, domain=$domain)"
+}
 
 /**
  * Builds the REGISTER requests for one account over a WebSocket, shaped like
@@ -34,6 +37,7 @@ class Registration(
     private var cseq = 0
     private var nonceCount = 0
     private var lastNonce: String? = null
+    private var answers = 0
 
     val contact: String get() = "<sip:$contactUser@$viaHost;transport=ws>"
 
@@ -43,6 +47,7 @@ class Registration(
     /** A new REGISTER: the first one, or a renewal. [expires] 0 unregisters. */
     fun register(expires: Int = this.expires): SipRequest {
         cseq++
+        answers = 0
         val name = account.displayName?.let { "\"${it.replace("\"", "")}\" " } ?: ""
         return SipRequest(
             "REGISTER", requestUri,
@@ -76,6 +81,10 @@ class Registration(
             ?.let(DigestChallenge::parse) ?: return null
         val alreadyAnswered = request.header(if (proxy) "Proxy-Authorization" else "Authorization") != null
         if (alreadyAnswered && challenge.nonce == lastNonce && !challenge.stale) return null
+        // A switch that keeps sending new or stale nonces must not keep the phone answering.
+        if (answers >= MAX_ANSWERS) return null
+        if (challenge.qop.isNotEmpty() && challenge.qop.none { it.equals("auth", ignoreCase = true) }) return null
+        answers++
 
         nonceCount = if (challenge.nonce == lastNonce) nonceCount + 1 else 1
         lastNonce = challenge.nonce
@@ -91,17 +100,49 @@ class Registration(
 
     /** Seconds the switch actually granted, from a 200 OK (its Contact expires, or Expires). */
     fun grantedExpires(ok: SipResponse): Int {
-        val fromContact = ok.headers("Contact").firstNotNullOfOrNull { value ->
-            if (!value.contains(viaHost)) null
-            else Regex("expires=(\\d+)", RegexOption.IGNORE_CASE).find(value)?.groupValues?.get(1)?.toIntOrNull()
+        val bindings = ok.headers("Contact").flatMap(::splitContacts)
+        val fromContact = bindings.firstNotNullOfOrNull { value ->
+            val uri = value.substringAfter('<', "").substringBefore('>')
+            if (uri.substringBefore(';') != contactUri) null
+            else Regex("expires=(\\d+)", RegexOption.IGNORE_CASE).find(value.substringAfter('>'))?.groupValues?.get(1)?.toIntOrNull()
         }
         return fromContact ?: ok.header("Expires")?.trim()?.toIntOrNull() ?: expires
     }
 
+    /** The Contact URI this phone registers, to find its own binding in a 200 OK. */
+    private val contactUri get() = "sip:$contactUser@$viaHost"
+
+    /** The top Via's branch, which names the transaction a response belongs to. */
+    fun branchOf(message: SipMessage): String? =
+        message.header("Via")?.let { Regex("branch=([^;,\\s]+)", RegexOption.IGNORE_CASE).find(it)?.groupValues?.get(1) }
+
     private fun newBranch() = "z9hG4bK" + token(16)
+
+    companion object {
+        const val MAX_ANSWERS = 2
+    }
 
     private fun token(length: Int): String {
         val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
         return (1..length).map { chars[random.nextInt(chars.length)] }.joinToString("")
     }
+}
+
+/** A Contact header holding several bindings, split on commas outside <> and quotes. */
+internal fun splitContacts(value: String): List<String> {
+    val parts = mutableListOf<String>()
+    var depth = 0
+    var quoted = false
+    var start = 0
+    value.forEachIndexed { i, c ->
+        when {
+            c == '"' -> quoted = !quoted
+            quoted -> {}
+            c == '<' -> depth++
+            c == '>' -> depth--
+            c == ',' && depth == 0 -> { parts += value.substring(start, i).trim(); start = i + 1 }
+        }
+    }
+    parts += value.substring(start).trim()
+    return parts.filter { it.isNotEmpty() }
 }

@@ -76,15 +76,20 @@ sealed class SipMessage(
                 headers.add(line.substring(0, colon).trim() to line.substring(colon + 1).trim())
             }
 
+            val declared = headers.firstOrNull { canonical(it.first) == "content-length" }?.second?.trim()?.toIntOrNull()
+            val bytes = body.encodeToByteArray()
+            if (declared != null && declared > bytes.size) throw SipParseException("body shorter than Content-Length")
+            val exactBody = if (declared != null) bytes.copyOf(declared).decodeToString() else body
+
             val start = lines.first()
             return if (start.startsWith("SIP/2.0 ")) {
                 val parts = start.split(" ", limit = 3)
                 val status = parts.getOrNull(1)?.toIntOrNull() ?: throw SipParseException("bad status line: $start")
-                SipResponse(status, parts.getOrElse(2) { "" }, headers, body)
+                SipResponse(status, parts.getOrElse(2) { "" }, headers, exactBody)
             } else {
                 val parts = start.split(" ")
                 if (parts.size != 3 || parts[2] != "SIP/2.0") throw SipParseException("bad request line: $start")
-                SipRequest(parts[0], parts[1], headers, body)
+                SipRequest(parts[0], parts[1], headers, exactBody)
             }
         }
     }

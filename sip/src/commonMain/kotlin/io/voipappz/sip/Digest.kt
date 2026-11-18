@@ -42,6 +42,7 @@ data class DigestChallenge(
                 val eq = text.indexOf('=', i).takeIf { it >= 0 } ?: break
                 val key = text.substring(i, eq).trim().lowercase()
                 i = eq + 1
+                while (i < text.length && text[i].isWhitespace()) i++
                 val value: String
                 if (i < text.length && text[i] == '"') {
                     val sb = StringBuilder()
@@ -85,6 +86,9 @@ object Digest {
         val ha1 = md5("$username:${challenge.realm}:$password")
         val ha2 = md5("$method:$uri")
         val useQop = challenge.qop.any { it.equals("auth", ignoreCase = true) }
+        if (challenge.qop.isNotEmpty() && !useQop) {
+            throw UnsupportedOperationException("digest qop ${challenge.qop} is not supported (only auth)")
+        }
         val ncText = nc.toString(16).padStart(8, '0')
         val response = if (useQop) md5("$ha1:${challenge.nonce}:$ncText:$cnonce:auth:$ha2")
             else md5("$ha1:${challenge.nonce}:$ha2")
