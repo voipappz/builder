@@ -9,6 +9,7 @@ setup_done = ".builder-setup-done"
 start_timeout = 900
 requires = ["make", "mise", "node", "npm", "git"]
 port = 8000
+health = "/"
 stop = "stop"
 page = "/#!action=stream&udid=emulator-5554&player=webcodecs&fitToScreen=true&ws=ws%3A%2F%2F127.0.0.1%3A8000%2F%3Faction%3Dproxy-adb%26remote%3Dtcp%253A8886%26udid%3Demulator-5554"
 
