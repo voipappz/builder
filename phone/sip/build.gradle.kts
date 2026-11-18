@@ -20,10 +20,11 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            implementation(libs.kotlinx.coroutines.core)
-            implementation(libs.okio)
-            implementation(libs.ktor.client.core)
+            // Part of this library's public API (HttpClient, flows, Deferred), so `api`.
+            api(libs.kotlinx.coroutines.core)
+            api(libs.ktor.client.core)
             implementation(libs.ktor.client.websockets)
+            implementation(libs.okio)
         }
         commonTest.dependencies {
             implementation(kotlin("test"))

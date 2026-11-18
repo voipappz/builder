@@ -13,3 +13,13 @@ requires = ["make"]
 id = "test"
 label = "Run tests"
 make = "test"
+
+[[builder.actions]]
+id = "apk"
+label = "Build Android app"
+make = "apk"
+
+[[builder.actions]]
+id = "install"
+label = "Install on my phone"
+make = "install"

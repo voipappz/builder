@@ -8,7 +8,7 @@ GRADLE_USER_HOME ?= $(HOME)/android/gradle
 export JAVA_HOME ANDROID_HOME GRADLE_USER_HOME
 GRADLE = ./gradlew --console=plain
 
-.PHONY: setup dev test registercheck
+.PHONY: setup dev test registercheck apk install
 
 # Once: download Gradle and the libraries, compile, run the tests.
 setup:
@@ -27,3 +27,12 @@ test:
 # SIP_DOMAIN (optional). The password is never printed.
 registercheck:
 	$(GRADLE) -q :sip:registerCheck
+
+# The Android app (debug build), and installing it on a phone connected over
+# USB with developer mode on (adb from the Android SDK).
+apk:
+	$(GRADLE) -q :androidApp:assembleDebug
+	@echo androidApp/build/outputs/apk/debug/androidApp-debug.apk
+
+install: apk
+	$(ANDROID_HOME)/platform-tools/adb install -r androidApp/build/outputs/apk/debug/androidApp-debug.apk
