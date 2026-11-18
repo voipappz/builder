@@ -1,3 +1,4 @@
 plugins {
-    kotlin("multiplatform") version "2.1.21" apply false
+    alias(libs.plugins.kotlinMultiplatform) apply false
+    alias(libs.plugins.androidLibrary) apply false
 }

@@ -1,26 +1,55 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
-    kotlin("multiplatform")
+    alias(libs.plugins.kotlinMultiplatform)
+    alias(libs.plugins.androidLibrary)
 }
 
 kotlin {
-    // JVM for now, so the SIP core is tested on a desktop; Android and iOS
-    // targets are added with the app.
+    jvmToolchain(17)
+
+    // The phone: Android and iPhone share this code.
+    androidTarget {
+        compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
+    }
+    iosArm64()
+    iosSimulatorArm64()
+    iosX64()
+    // Desktop JVM: fast tests and the live registerCheck, no phone needed.
     jvm()
 
     sourceSets {
         commonMain.dependencies {
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
-            implementation("com.squareup.okio:okio:3.15.0")
-            implementation("io.ktor:ktor-client-core:3.1.3")
-            implementation("io.ktor:ktor-client-websockets:3.1.3")
-        }
-        jvmMain.dependencies {
-            implementation("io.ktor:ktor-client-okhttp:3.1.3")
+            implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.okio)
+            implementation(libs.ktor.client.core)
+            implementation(libs.ktor.client.websockets)
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.1")
+            implementation(libs.kotlinx.coroutines.test)
         }
+        androidMain.dependencies {
+            implementation(libs.ktor.client.okhttp)
+        }
+        iosMain.dependencies {
+            implementation(libs.ktor.client.darwin)
+        }
+        jvmMain.dependencies {
+            implementation(libs.ktor.client.okhttp)
+        }
+    }
+}
+
+android {
+    namespace = "io.voipappz.sip"
+    compileSdk = libs.versions.android.compileSdk.get().toInt()
+    defaultConfig {
+        minSdk = libs.versions.android.minSdk.get().toInt()
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 }
 
@@ -34,4 +63,5 @@ tasks.register<JavaExec>("registerCheck") {
     dependsOn(jvm.compilations["main"].compileTaskProvider)
     classpath = files(jvm.compilations["main"].output.allOutputs, jvm.compilations["main"].runtimeDependencyFiles)
     mainClass.set("io.voipappz.sip.RegisterCheckKt")
+    notCompatibleWithConfigurationCache("reads the account from the environment at run time")
 }
