@@ -3,3 +3,6 @@ build/
 */build/
 local.properties
 .idea/
+
+# Written by `make setup` for VoipAppz Builder
+.builder-setup-done

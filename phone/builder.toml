@@ -1,0 +1,15 @@
+# How VoipAppz Builder works on the phone app. The app is a native mobile
+# app with no web address (kind = "app"): `make dev` keeps the SIP tests
+# re-running as the agent edits, so a change that breaks them shows in
+# Builder's log at once. Calls and the Android app come next.
+[builder]
+kind = "app"
+name = "VoipAppz Phone"
+setup_done = ".builder-setup-done"
+start_timeout = 900
+requires = ["make"]
+
+[[builder.actions]]
+id = "test"
+label = "Run tests"
+make = "test"
