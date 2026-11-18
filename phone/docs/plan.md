@@ -1,6 +1,10 @@
 # VoipAppz Phone: plan
 
-Research behind it: [research-summary.md](research-summary.md).
+Research behind it: [research-summary.md](research-summary.md); everything
+collected in [research/](research/).
+
+The app's design (screens, look, flows) is open for discussion; the gates
+below are about making calls work first.
 
 ## Now: the mobile app (Kotlin Multiplatform)
 
@@ -17,7 +21,7 @@ screens. One gate at a time, screens last.
 | 4 | Restrictive networks (TURN) and Wi-Fi/mobile switching | |
 | 5 | Push for incoming calls (FCM, and a small Lua flow on the switch) | |
 | 6 | iPhone: `iosApp/` on a Mac, CallKit and PushKit | |
-| 7 | The real screens: dial pad, recent calls, contacts, settings | |
+| 7 | The real screens: dial pad, recent calls, contacts, settings | Design open for discussion |
 
 ## Later: a desktop phone
 

@@ -9,10 +9,10 @@ iPhone), only permissive licences (MIT, Apache, BSD), a native app (not a web
 page in a shell), and no native SIP libraries (no baresip, PJSIP or Linphone),
 so it stays easy to develop.
 
-Full report, with sources, and the research notes with the three Codex reviews
-are kept out of git (Builder ignores `reports/` and `research_notes/`); on the
-owner's machine they are in `~/voipappz/builder-native/reports/` and
-`~/voipappz/builder-native/research_notes/Kotlin SIP WebSocket softphone options/`.
+Everything collected: [research/](research/): the full report with sources
+([report.md](research/report.md)), the research notes and the three Codex
+reviews ([notes/](research/notes/)), and the earlier findings from the working
+conversation ([earlier-findings.md](research/earlier-findings.md)).
 
 ## The answer
 
