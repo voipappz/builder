@@ -14,14 +14,15 @@ screens. One gate at a time, screens last.
 
 | Gate | What | State |
 |---|---|---|
-| 0 | SIP module is Kotlin Multiplatform; JetBrains' layout (`sip`, `shared`, `androidApp`) | Done (2026-11-18) |
-| 1 | Live REGISTER, renew, reconnect, unregister against the switch | Registration code done; live test pending (`make registercheck`, or the app's Register screen) |
-| 2 | A call from a real Android phone to an echo extension, two-way audio (webrtc-kmp) | Next |
-| 3 | Incoming calls, the cancel/answer race, DTMF, hold | |
-| 4 | Restrictive networks (TURN) and Wi-Fi/mobile switching | |
-| 5 | Push for incoming calls (FCM, and a small Lua flow on the switch) | |
-| 6 | iPhone: `iosApp/` on a Mac, CallKit and PushKit | |
-| 7 | The real screens: dial pad, recent calls, contacts, settings | Design open for discussion |
+| 0 | SIP module is Kotlin Multiplatform; JetBrains' layout (`sip`, `shared`, `androidApp`) | Android and desktop-JVM build and test. iOS targets are declared but never built (needs a Mac) |
+| 1 | Live REGISTER and unregister against the switch; then renewal and reconnect | REGISTER/unregister code done, live test pending (`make registercheck`, or the app's screen). Renewal and reconnect not built |
+| 2 | A call from a real Android phone to an echo extension, two-way audio (webrtc-kmp), with the microphone permission | Next |
+| 3 | iOS feasibility on a Mac: the framework links, webrtc-kmp plays audio, one call | Early, to catch iOS problems before the design is built on top |
+| 4 | Incoming calls, the cancel/answer race, DTMF, hold; audio routing (earpiece, speaker, Bluetooth) and interruptions (a mobile call arriving) | |
+| 5 | Restrictive networks (TURN) and Wi-Fi/mobile switching | |
+| 6 | Push for incoming calls: FCM (Android), PushKit + CallKit (iPhone), a Lua flow on the switch; tests for late, duplicate and cancelled pushes | The switch-side flow is a design, untested |
+| 7 | Secure storage of the SIP password (Android Keystore, iOS Keychain) | |
+| 8 | The real screens: dial pad, recent calls, contacts, settings | Design open for discussion |
 
 ## Later: a desktop phone
 

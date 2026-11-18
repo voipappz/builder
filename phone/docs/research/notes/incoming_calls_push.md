@@ -169,7 +169,7 @@ FreeSWITCH has no native RFC 8599 support. Deployments either put an RFC 8599 pr
   3. Send 180 Ringing and early ringback to the caller.
   4. Wait up to about 20-30 s for a fresh `sofia::register` for that user. Poll `sofia_contact`, or subscribe via ESL.
   5. Bridge to `sofia_contact(user@domain)`.
-  6. Send a "cancel" push (or a missed-call notification) when the caller hangs up, so the phone stops ringing. On iOS that push must also be reported to CallKit or carry the end-call.
+  6. When the caller hangs up first: on Android send a data push (or a missed-call notification) so the phone stops ringing; on iOS cancel over the connection the app opened after the VoIP push, not with another VoIP push (correction from the Codex docs review, per Apple's PushKit documentation).
 - On iOS, Apple's rule that every VoIP push must produce a CallKit call means "registration-refresh pushes" (RFC 8599 binding refresh) cannot be sent as VoIP pushes. Use long registration expiries, and refresh when the app is foregrounded. (Inference, consistent with the DTS rule above.)
 - Licensing for a small team:
   - Flexisip AGPL is acceptable if run unmodified as a separate network service. AGPL obligations apply mainly to modifications offered over a network; confirm with counsel.

@@ -82,8 +82,16 @@ private suspend fun register(server: String, extension: String, password: String
         kotlinx.coroutines.coroutineScope {
             val transport = WebSocketTransport.connect(http, server, this)
             try {
-                when (val result = SipClient(transport).register(Registration(SipAccount(extension, password, domain), expires = 300))) {
-                    is RegisterResult.Registered -> "Registered $extension@$domain for ${result.expires}s"
+                val client = SipClient(transport)
+                val registration = Registration(SipAccount(extension, password, domain), expires = 300)
+                when (val result = client.register(registration)) {
+                    is RegisterResult.Registered -> {
+                        // A test screen: it does not stay registered (renewal
+                        // comes later), so it unregisters again at once.
+                        val off = runCatching { client.register(registration, expires = 0) }.getOrNull()
+                        "Registered $extension@$domain (granted ${result.expires}s), then " +
+                            if (off is RegisterResult.Registered) "unregistered." else "unregister failed."
+                    }
                     is RegisterResult.Refused -> "Refused: ${result.status} ${result.reason}"
                 }
             } finally {

@@ -17,16 +17,14 @@ web page), no native SIP libraries (no baresip, PJSIP, Linphone), easy to develo
 
 ## Our switch (checked 2026-11-18)
 
-- SIP over WebSocket: `wss://switch.voipappz.io:8443` (FreeSWITCH `wss-binding`
-  `:8443`, `ws-binding` `:5066`, in `va-crystal/freeswitch/conf/sip_profiles/internal.xml`).
-- Certificate valid (Let's Encrypt, CN `switch.voipappz.io`); the switch accepted
-  a WebSocket handshake with subprotocol `sip`. No SIP message sent yet.
-- The browser phone (connectix-io/app, sip.js) uses this endpoint; its settings
-  code stores the SIP password in browser storage (Codex flagged this; the mobile
-  app must use secure storage).
-- `mod_verto` is built but not loaded (`<!--<load module="mod_verto"/>-->` in
-  `autoload_configs/modules.conf.xml`); `verto.conf.xml` has WSS on 8082 with
-  the same user directory. The owner does not want Verto.
+- Phones connect with SIP over WebSocket to `wss://switch.voipappz.io:8443`,
+  the same endpoint the browser phone uses. Its certificate is valid and it
+  accepted a WebSocket handshake with subprotocol `sip`; no SIP message has
+  been sent to it yet.
+- The browser phone keeps the SIP password in browser storage; the mobile app
+  must use the platform's secure storage instead (Codex).
+- FreeSWITCH's Verto module exists on the switch but is not enabled; the owner
+  does not want Verto.
 
 ## Projects checked on GitHub
 

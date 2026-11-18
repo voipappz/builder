@@ -39,11 +39,14 @@ fun main() {
                     is RegisterResult.Registered -> println("✓ registered $user@$domain for ${result.expires}s")
                     is RegisterResult.Refused -> println("✕ refused: ${result.status} ${result.reason}")
                 }
-                if (result is RegisterResult.Registered) {
+                // Success means registered and unregistered: a check that
+                // leaves a registration behind has not cleaned up.
+                val unregistered = result is RegisterResult.Registered && run {
                     val off = runCatching { client.register(registration, expires = 0) }.getOrNull()
-                    println(if (off is RegisterResult.Registered) "✓ unregistered" else "! unregister got $off")
+                    println(if (off is RegisterResult.Registered) "✓ unregistered" else "✕ unregister failed: $off")
+                    off is RegisterResult.Registered
                 }
-                result is RegisterResult.Registered
+                unregistered
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

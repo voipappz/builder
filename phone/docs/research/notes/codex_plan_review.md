@@ -3,7 +3,7 @@
 Read-only throughout: no file changes, `.env` reads or switch connections.
 
 1. **Your SIP core — promising experiment, substantial work remaining.**  
-   **Evidence:** existing reports contain 17 passing JVM tests; I did not rerun them. The [build targets JVM only](/home/nir/voipappz/builder-native/phone/sip/build.gradle.kts:5). Registration handles bounded authentication retries and 423 responses, but automatic renewal, reconnect, incoming requests and dialogs remain absent. **Inference:** production reliability will depend primarily on transaction/dialog state machines, beyond message construction and digest.
+   **Evidence:** existing reports contain 17 passing JVM tests; I did not rerun them. The [build targets JVM only](phone/sip/build.gradle.kts:5). Registration handles bounded authentication retries and 423 responses, but automatic renewal, reconnect, incoming requests and dialogs remain absent. **Inference:** production reliability will depend primarily on transaction/dialog state machines, beyond message construction and digest.
 
 2. **UVP — source audit remains unresolved.**  
    **Evidence:** GitHub source retrieval failed; I could read its [README](https://github.com/Frank-Coding97/uvp-gb28181-sim), which documents UDP/TCP, camera RTP and MD5 authentication. I therefore cannot honestly rate its dialog/transaction implementation or identify code-level defects. **Inference:** digest/parser utilities might transfer after inspection; its camera SDP should be replaced by libwebrtc-generated SDP. Do not budget its advertised INVITE/BYE/CANCEL support as a reusable telephone stack without that audit.

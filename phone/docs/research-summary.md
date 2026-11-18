@@ -66,10 +66,15 @@ permissive licence does SIP over WebSocket in Kotlin and also runs on iPhone.
   - iPhone: every VoIP push must be reported to CallKit at once, or iOS kills
     the app and can stop sending pushes.
   - FreeSWITCH has no built-in support for holding a call until the woken phone
-    registers again (RFC 8599); a small Lua flow on the switch does it.
-- None of the big calling services (Telnyx, Twilio, Vonage, Sinch) uses SIP
-  over WebSocket on phones; the "SIP library + native WebRTC" pattern is proven
-  in Flutter and React Native.
+    registers again (RFC 8599); a small Lua flow on the switch does it (a design,
+    untested).
+  - If the caller hangs up before the phone answers: Android gets a data push;
+    iPhone is told over the connection it opened after the VoIP push (no second
+    VoIP push).
+- Of the big calling services, Telnyx (renamed Verto) and Twilio (its own
+  protocol) do not use SIP over WebSocket on phones; Vonage's and Sinch's
+  protocols are not documented. The "SIP library + native WebRTC" pattern is
+  proven in Flutter and React Native.
 
 ## Codex's reviews
 
