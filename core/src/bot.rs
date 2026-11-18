@@ -654,6 +654,15 @@ async fn bridge(client: WebSocket, url: String, token: String) {
 mod tests {
     use super::*;
 
+    /// The phone project shows the emulator's stream in Builder's pane.
+    #[test]
+    fn reads_the_phone_project() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../phone");
+        let spec = read_spec(&dir).unwrap();
+        assert_eq!((spec.kind, spec.port, spec.stop.as_deref()), (Kind::App, 8000, Some("stop")));
+        assert!(spec.page.as_deref().unwrap().starts_with("/#!action=stream&udid=emulator-5554"));
+    }
+
     #[test]
     fn reads_a_bot_folder() {
         let dir = tempfile::tempdir().unwrap();
