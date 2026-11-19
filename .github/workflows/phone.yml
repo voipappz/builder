@@ -42,6 +42,45 @@ jobs:
           path: phone/sip/build/test-results/
           if-no-files-found: ignore
 
+  # The mobile development environment as Builder opens it: `make setup`
+  # installs the tools (Java, Android SDK, emulator, ws-scrcpy), then
+  # `make dev` boots the emulator, installs and opens the app and serves the
+  # screen stream Builder shows beside the chat; the job checks the stream
+  # answers and the app is in front, then `make stop`.
+  dev-env:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - uses: jdx/mise-action@v2
+        with:
+          working_directory: phone
+      - uses: gradle/actions/setup-gradle@v4
+      - name: make setup (install the tools)
+        run: make setup
+      - name: make dev (emulator, app, stream)
+        run: |
+          make dev > dev.log 2>&1 &
+          timeout 900 sh -c 'until curl -fs -o /dev/null http://127.0.0.1:8000/; do sleep 5; done' || { tail -50 dev.log; exit 1; }
+          mise exec -- adb -s emulator-5554 shell dumpsys activity activities | grep -m1 -E "ResumedActivity.*io.voipappz.phone" \
+            || { tail -50 dev.log; exit 1; }
+          echo "Stream answers on 127.0.0.1:8000 and the app is in front"
+      - name: make stop
+        if: always()
+        run: make stop
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: dev-env-logs
+          path: |
+            phone/dev.log
+            phone/build/emulator.log
+          if-no-files-found: ignore
+
   # The iPhone targets build only on a Mac (on Linux they are skipped), so
   # this job keeps iOS-only code and the Darwin dependencies honest.
   ios:
