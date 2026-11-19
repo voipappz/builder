@@ -75,6 +75,10 @@ pub struct BotSpec {
     /// Present once `make setup` has run; setup runs when it is missing.
     #[serde(default)]
     pub setup_done: Option<String>,
+    /// The make target for that first-run setup (default `setup`): a project
+    /// whose own `setup` does something else names a safe one, e.g. `install`.
+    #[serde(default = "default_setup")]
+    pub setup: String,
     /// Seconds `make dev` may take to answer; the first run compiles.
     #[serde(default = "default_start_timeout")]
     pub start_timeout: u64,
@@ -108,6 +112,7 @@ fn default_port() -> u16 { 8090 }
 fn default_health() -> String { "/healthz".into() }
 fn default_socket() -> String { "/earshot".into() }
 fn default_start_timeout() -> u64 { 300 }
+fn default_setup() -> String { "setup".into() }
 
 #[derive(Deserialize)]
 struct BuilderToml {
@@ -128,9 +133,9 @@ pub fn read_spec(dir: &Path) -> Result<BotSpec, String> {
     // A leading '-' would read as an option to make or `command -v`.
     let name = |t: &String, extra: &str| t.starts_with(|c: char| c.is_ascii_alphanumeric())
         && t.chars().all(|c| c.is_ascii_alphanumeric() || extra.contains(c));
-    if spec.stop.as_ref().is_some_and(|t| !name(t, "-_")) || !spec.requires.iter().all(|t| name(t, "-_."))
+    if spec.stop.as_ref().is_some_and(|t| !name(t, "-_")) || !name(&spec.setup, "-_") || !spec.requires.iter().all(|t| name(t, "-_."))
         || !spec.actions.iter().all(|a| name(&a.id, "-_") && name(&a.make, "-_")) {
-        return Err(format!("{}: stop, actions' id and make name make targets, requires names commands (letters, digits, - _ and . in commands)", path.display()));
+        return Err(format!("{}: setup, stop, actions' id and make name make targets, requires names commands (letters, digits, - _ and . in commands)", path.display()));
     }
     if let Some(url) = spec.url.as_mut() {
         // The folder is the agent's to edit, and the bridge sends the folder's
@@ -307,9 +312,9 @@ impl Bot {
         if done || self.remote() {
             return Ok(false);
         }
-        run_on(self.distro.as_deref(), "make", &["setup"], &self.dir, &self.env, Duration::from_secs(20 * 60))
+        run_on(self.distro.as_deref(), "make", &[self.spec.setup.as_str()], &self.dir, &self.env, Duration::from_secs(20 * 60))
             .await
-            .map_err(|e| format!("The {}'s make setup failed: {e}", self.spec.kind.noun()))?;
+            .map_err(|e| format!("The {}'s make {} failed: {e}", self.spec.kind.noun(), self.spec.setup))?;
         Ok(true)
     }
 
@@ -673,6 +678,11 @@ mod tests {
         assert!(read_spec(dir.path()).unwrap_err().contains("kind = \"bot\", \"product\" or \"app\""));
         std::fs::write(dir.path().join("builder.toml"), "[builder]\nkind = \"app\"\nname = \"Phone\"\n").unwrap();
         assert_eq!(read_spec(dir.path()).unwrap().kind, Kind::App);
+        assert_eq!(read_spec(dir.path()).unwrap().setup, "setup");
+        std::fs::write(dir.path().join("builder.toml"), "[builder]\nkind = \"product\"\nname = \"Web\"\nsetup = \"install\"\n").unwrap();
+        assert_eq!(read_spec(dir.path()).unwrap().setup, "install");
+        std::fs::write(dir.path().join("builder.toml"), "[builder]\nkind = \"product\"\nname = \"Web\"\nsetup = \"-x\"\n").unwrap();
+        assert!(read_spec(dir.path()).is_err());
         std::fs::write(dir.path().join("builder.toml"),
             "[builder]\nkind = \"bot\"\nname = \"Noa\"\nport = 8091\nsetup_done = \".env\"\n").unwrap();
         let spec = read_spec(dir.path()).unwrap();
@@ -753,7 +763,7 @@ mod tests {
     async fn a_native_app_is_up_while_it_runs() {
         let app = |dir: &Path, port| {
             let spec = BotSpec { kind: Kind::App, name: "Phone".into(), port, health: "/healthz".into(),
-                socket: "/earshot".into(), setup_done: None, start_timeout: 5, stop: None, mcp: None, page: None,
+                socket: "/earshot".into(), setup_done: None, setup: "setup".into(), start_timeout: 5, stop: None, mcp: None, page: None,
                 requires: vec![], actions: vec![], url: None };
             let env = HashMap::from([("PATH".to_string(), std::env::var("PATH").unwrap())]);
             Bot::new(spec, dir.to_path_buf(), port, None, env, HashMap::new())
@@ -777,7 +787,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".env"), "EARSHOT_BOT_TOKEN=t0ken\n").unwrap();
         let spec = BotSpec { kind: Kind::Bot, name: "t".into(), port: bot_port, health: "/healthz".into(),
-            socket: "/earshot".into(), setup_done: None, start_timeout: 5, stop: None, mcp: None, page: None,
+            socket: "/earshot".into(), setup_done: None, setup: "setup".into(), start_timeout: 5, stop: None, mcp: None, page: None,
             requires: vec![], actions: vec![], url: None };
         let bot = Arc::new(Bot::new(spec, dir.path().to_path_buf(), bot_port, None, HashMap::new(), HashMap::new()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -849,7 +859,7 @@ h.HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()\n").unwrap();
         std::fs::write(dir.path().join("Makefile"),
             "dev:\n\texec python3 server.py $(PORT)\nhalt:\n\ttouch stopped\n").unwrap();
         let spec = BotSpec { kind: Kind::Product, name: "t".into(), port, health: "/healthz".into(),
-            socket: "/earshot".into(), setup_done: None, start_timeout: 20, stop: Some("halt".into()),
+            socket: "/earshot".into(), setup_done: None, setup: "setup".into(), start_timeout: 20, stop: Some("halt".into()),
             mcp: Some("/voipappz/mcp".into()), page: Some("/admin".into()), requires: vec!["python3".into()],
             actions: vec![], url: None };
         let env: HashMap<String, String> = std::env::vars().collect();
@@ -877,7 +887,7 @@ h.HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()\n").unwrap();
         std::fs::write(dir.path().join("Makefile"), "check:\n\t@echo checked $(PORT)\nship:\n\t@echo shipped\nfail:\n\t@exit 3\n").unwrap();
         let action = |id: &str, confirm| Action { id: id.into(), label: id.into(), make: id.into(), confirm };
         let spec = BotSpec { kind: Kind::Product, name: "t".into(), port: 4100, health: "/".into(), socket: "/earshot".into(),
-            setup_done: None, start_timeout: 5, stop: None, mcp: None, page: None, requires: vec![],
+            setup_done: None, setup: "setup".into(), start_timeout: 5, stop: None, mcp: None, page: None, requires: vec![],
             actions: vec![action("check", false), action("ship", true), action("fail", false)], url: None };
         let env: HashMap<String, String> = std::env::vars().collect();
         let bot = Arc::new(Bot::new(spec, dir.path().to_path_buf(), 4100, None, env, HashMap::new()));
@@ -922,7 +932,7 @@ h.HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()\n").unwrap();
             "dev:\n\tsetsid python3 server.py $(PORT) >/dev/null 2>&1 & echo $$! > pid.$(PORT)\n\
 down:\n\t-kill $$(cat pid.$(PORT)) && rm pid.$(PORT)\n").unwrap();
         let spec = BotSpec { kind: Kind::Product, name: "t".into(), port, health: "/".into(),
-            socket: "/earshot".into(), setup_done: None, start_timeout: 20, stop: Some("down".into()),
+            socket: "/earshot".into(), setup_done: None, setup: "setup".into(), start_timeout: 20, stop: Some("down".into()),
             mcp: None, page: None, requires: vec![], actions: vec![], url: None };
         let env: HashMap<String, String> = std::env::vars().collect();
         let bot = Bot::new(spec, dir.path().to_path_buf(), port, None, env, HashMap::new());
