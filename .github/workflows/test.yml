@@ -13,6 +13,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: chat/.nvmrc
+      # The chat first: its tests, then the build Builder embeds, so the Rust
+      # tests of the served chat run instead of being skipped.
+      - name: Chat tests and build
+        working-directory: chat
+        run: npm ci && npm test && npm run build
       - name: Core and CLI tests
         run: cargo test --locked
 
@@ -50,6 +58,12 @@ jobs:
           printf '%s\n' "$KEY" > ~/.ssh/voipappz-app && chmod 600 ~/.ssh/voipappz-app
           ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
           printf 'Host github.com-app\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/voipappz-app\n  IdentitiesOnly yes\n' >> ~/.ssh/config
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: chat/.nvmrc
+      - name: Build the chat (chat/ into client/)
+        working-directory: chat
+        run: npm ci && npm run build
       - name: Clone the app, setup, dev, Builder, agent
         env:
           APP_REPO: git@github.com-app:voipappz/app.git
@@ -72,7 +86,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: chat/.nvmrc
       - name: Connectix deploy key
         env:
           KEY: ${{ secrets.CONNECTIX_DEPLOY_KEY }}
@@ -81,28 +95,16 @@ jobs:
           printf '%s\n' "$KEY" > ~/.ssh/connectix && chmod 600 ~/.ssh/connectix
           ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
           printf 'Host github.com\n  IdentityFile ~/.ssh/connectix\n  IdentitiesOnly yes\n' > ~/.ssh/config
-      # voipappz/app is private: a read-only deploy key (secret APP_DEPLOY_KEY)
-      # behind the SSH alias github.com-app, so it never collides with another
-      # repository's key on the same host.
-      - name: voipappz/app deploy key
+      - name: Build the chat (chat/ into client/)
         shell: bash
-        env:
-          KEY: ${{ secrets.APP_DEPLOY_KEY }}
-        run: |
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$KEY" > ~/.ssh/voipappz-app && chmod 600 ~/.ssh/voipappz-app
-          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
-          printf 'Host github.com-app\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/voipappz-app\n  IdentitiesOnly yes\n' >> ~/.ssh/config
-      - name: Build the chat client
-        env:
-          APP_REPO: git@github.com-app:voipappz/app.git
-        run: scripts/client.sh
+        working-directory: chat
+        run: npm ci && npm run build
       - name: Chromium for the page check
-        working-directory: .client-app
+        working-directory: chat
         run: npx playwright install --with-deps chromium
       - name: Appz end to end
         env:
-          NODE_PATH: ${{ github.workspace }}/.client-app/node_modules
+          NODE_PATH: ${{ github.workspace }}/chat/node_modules
         run: scripts/e2e-appz.sh
       - uses: actions/upload-artifact@v4
         if: always()

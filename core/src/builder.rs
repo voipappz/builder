@@ -53,8 +53,10 @@ fn embedded_client(path: &str) -> Option<&'static [u8]> {
     client_files::CLIENT_FILES.iter().find(|(p, _)| *p == path).map(|(_, bytes)| *bytes)
 }
 
+/// The built-in chat is used unless VOIPAPPZ_BUILDER_CLIENT_DEV=1 asks for
+/// the live one: `npm run dev` in chat/ (hot reload), at --client-url.
 fn has_embedded_client() -> bool {
-    embedded_client("client.js").is_some()
+    embedded_client("client.js").is_some() && std::env::var("VOIPAPPZ_BUILDER_CLIENT_DEV").as_deref() != Ok("1")
 }
 
 fn content_type(path: &str) -> &'static str {
@@ -565,7 +567,7 @@ fn stub_page(config: &BuilderConfig) -> Response<Body> {
     </script>
     <script type="module" nonce="{nonce}" src="{client}/@vite/client"></script>"#
             ),
-            format!("{client}/src/builder-client/main.jsx"),
+            format!("{client}/src/main.jsx"),
         )
     } else {
         (String::new(), format!("{client}/builder/client.js"))
@@ -755,7 +757,7 @@ mod tests {
             assert!(!body.contains("@react-refresh"));
         } else {
             assert!(body.contains("http://localhost:3000/@react-refresh"));
-            assert!(body.contains("\"http://localhost:3000/src/builder-client/main.jsx\""));
+            assert!(body.contains("\"http://localhost:3000/src/main.jsx\""));
         }
         assert!(body.contains("voipappz-builder:info"));
         assert!(body.contains("&quot;workspaceName&quot;:&quot;app-builder&quot;"));

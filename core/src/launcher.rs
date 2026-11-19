@@ -619,8 +619,10 @@ pub fn onboarding_settings(mut settings: Settings, app_repo: &str, api_url: &str
         return Err("This folder is on a network share. Choose a checkout on a local drive or inside WSL (\\\\wsl.localhost\\<distro>\\…).".into());
     }
     let repo = PathBuf::from(app_repo.trim());
-    if !repo.join("package.json").is_file() || !repo.join("src/builder-client/main.jsx").is_file() {
-        return Err("Choose the React app folder containing package.json and src/builder-client/main.jsx.".into());
+    // The chat lives in Builder now (chat/), so the app needs only to be a
+    // package; its src/builder-client is no longer required.
+    if !repo.join("package.json").is_file() {
+        return Err("Choose the React app folder containing package.json.".into());
     }
     if !repo.join(".git").exists() {
         return Err("Choose a Git checkout of voipappz/app. Builder needs Git to create its separate working copy.".into());
@@ -1335,10 +1337,8 @@ mod tests {
     #[test]
     fn hosted_onboarding_clears_previous_local_api() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("src/builder-client")).unwrap();
         std::fs::create_dir(dir.path().join(".git")).unwrap();
         std::fs::write(dir.path().join("package.json"), "{}").unwrap();
-        std::fs::write(dir.path().join("src/builder-client/main.jsx"), "").unwrap();
         let mut previous = Settings::default();
         previous.api_dir = Some(PathBuf::from("old-local-api"));
         let settings = onboarding_settings(previous, dir.path().to_str().unwrap(), "https://switch.voipappz.io/", "", "").unwrap();

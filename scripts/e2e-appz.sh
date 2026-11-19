@@ -9,8 +9,8 @@
 #   scripts/e2e-appz.sh [work-dir]
 #
 # CONNECTIX_DIR uses an existing checkout instead of cloning; CONNECTIX_REF
-# picks the branch (default main). The chat client must be in client/
-# (scripts/client.sh) before the CLI is built.
+# picks the branch (default main). The chat must be built into client/
+# (npm ci && npm run build in chat/) before the CLI is built.
 set -euo pipefail
 
 work=$(realpath -m "${1:-${RUNNER_TEMP:-/tmp}/builder-e2e-appz}")
@@ -21,7 +21,7 @@ port=${BUILDER_PORT:-9832}
 log=$work/builder.log
 state=${XDG_STATE_HOME:-$HOME/.local/state}/voipappz-builder
 
-[ -f "$root/client/client.js" ] || { echo "✕ no chat client in client/; run scripts/client.sh first"; exit 1; }
+[ -f "$root/client/client.js" ] || { echo "✕ no chat client in client/; run npm run build in chat/ first"; exit 1; }
 [ -n "${BUILDER_BIN:-}" ] || (cd "$root" && cargo build --locked -p builder-cli)
 
 rm -rf "$work" && mkdir -p "$work"

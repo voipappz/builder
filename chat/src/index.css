@@ -1,0 +1,341 @@
+/* Rubik is loaded once, in index.html. */
+
+/* Global Design System - Sentry Inspired (LIGHT THEME) */
+:root {
+  /* Layout */
+  /* Open: a text-only navigation panel. Collapsed: an icon-only rail. */
+  --sidebar-width: 200px;
+  --sidebar-width-collapsed: 64px;
+
+  /* Light Theme Colors (Sentry inspired) */
+  --bg-primary: #ffffff;
+  --bg-secondary: #f9fafb;
+  --bg-tertiary: #f3f4f6;
+  --bg-elevated: #ffffff;
+
+  /* Text Colors */
+  --text-primary: #111827;
+  --text-secondary: #6b7280;
+  --text-tertiary: #9ca3af;
+  --text-muted: #d1d5db;
+
+  /* Accent Colors — voipappz indigo (the reports date-selector color) */
+  --accent-primary: #5c6bc0;
+  --accent-primary-hover: #3f4fb5;
+  --accent-secondary: #EEA740;
+  --accent-secondary-hover: #E49728;
+  --accent-success: #10b981;
+  --accent-warning: #f4834f;
+  --accent-error: #ef4444;
+  --accent-info: #3b82f6;
+
+  /* Navy palette */
+  --navy-900: #1E2530;
+
+  /* Border & Divider */
+  --border-color: #e5e7eb;
+  --border-color-hover: #d1d5db;
+  --divider-color: #e5e7eb;
+
+  /* Overlay & Shadow */
+  --overlay-bg: rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-xl: 0 12px 36px rgba(0, 0, 0, 0.16);
+
+  /* Spacing */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+  --spacing-2xl: 48px;
+
+  /* Typography */
+  --font-family: 'Rubik', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+  --font-family-heading: 'Rubik', sans-serif;
+  --font-size-xs: 12px;
+  --font-size-sm: 13px;
+  --font-size-base: 15px;
+  --font-size-md: 16px;
+  --font-size-lg: 17px;
+  --font-size-xl: 19px;
+  --font-size-2xl: 22px;
+  --font-size-3xl: 26px;
+  --font-size-4xl: 34px;
+
+  /* Font Weights */
+  --font-light: 300;
+  --font-normal: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+
+  /* Line Heights */
+  --line-height-tight: 1.2;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.7;
+
+  /* Border Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-pill: 24px;
+  --radius-circle: 50%;
+
+  /* Transitions */
+  --transition-fast: 0.15s ease;
+  --transition-base: 0.2s ease;
+  --transition-slow: 0.3s ease;
+
+  /* Z-index layers */
+  --z-dropdown: 1000;
+  --z-sticky: 1020;
+  --z-fixed: 1030;
+  --z-sidebar: 1200;
+  --z-modal-backdrop: 1300;
+  --z-modal: 1400;
+  --z-popover: 1500;
+  --z-tooltip: 1600;
+
+  /* Theme Colors (Light - Default) */
+  --theme-bg-primary: #ffffff;
+  --theme-bg-secondary: #f5f5f5;
+  --theme-bg-tertiary: #e8e8e8;
+  --theme-surface: #ffffff;
+  --theme-text-primary: #1a202c;
+  --theme-text-secondary: #4a5568;
+  --theme-text-tertiary: #9ca3af;
+  --theme-border: #e2e8f0;
+  --theme-hover: rgba(0, 0, 0, 0.04);
+  --theme-scrollbar-track: #f1f1f1;
+  --theme-scrollbar-thumb: #c1c1c1;
+  --widget-header-bg: #f8fafc;
+  --widget-content-bg: #ffffff;
+  --widget-border: #e2e8f0;
+  --counter-card-bg: #f1f5f9;
+  --counter-card-text: #0f172a;
+  --theme-link: #2563eb;
+
+  /* TopBar — professional toolbar tint (slightly cooler than content bg) */
+  --topbar-bg: #f3f4f7;
+
+  /* Border variants */
+  --border-light: #e5e7eb;
+  --border-dark: #e0e0e0;
+
+  /* Semantic Colors */
+  --color-success: #4caf50;
+  --color-warning: #FF9800;
+  --color-danger: #f44336;
+  --color-info-blue: #2196f3;
+  --color-neutral: #757575;
+  --color-gold: #FFD700;
+
+  /* Accent alpha variants (navy #65758E) */
+  --accent-primary-alpha-8: rgba(92, 107, 192, 0.08);
+  --accent-primary-alpha-10: rgba(92, 107, 192, 0.10);
+  --accent-primary-alpha-12: rgba(92, 107, 192, 0.12);
+  --accent-primary-alpha-15: rgba(92, 107, 192, 0.15);
+  --accent-primary-alpha-18: rgba(92, 107, 192, 0.18);
+  --accent-primary-alpha-20: rgba(92, 107, 192, 0.20);
+  --accent-primary-dark: #45526B;
+
+  /* Shadow variants */
+  --shadow-subtle: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.1);
+  --shadow-focus: 0 2px 12px var(--accent-primary-alpha-18);
+  --shadow-accent-hover: 0 2px 8px var(--accent-primary-alpha-12);
+
+  /* Gradient backgrounds */
+  --gradient-purple-light: linear-gradient(135deg, #f3f5f8, #e9ecf1);
+  --gradient-purple-border: #d4dae3;
+  --gradient-player-bg: linear-gradient(135deg, #f5f7fa 0%, #edf0f5 100%);
+
+  /* Error chip */
+  --chip-error-bg: #fef2f2;
+  --chip-error-border: #fecaca;
+
+  /* Counter card colors */
+  --counter-total: #6b7280;
+  --counter-answered: #22c55e;
+  --counter-no-answer: #ef4444;
+  --counter-outgoing: #3b82f6;
+  --counter-incoming: #10b981;
+
+  /* Input bg */
+  --input-bg: #fafbfc;
+
+  /* Legacy compat aliases */
+  --primary-black: #000;
+  --primary-white: #fff;
+  --background-primary: var(--theme-bg-primary);
+  --background-secondary: var(--theme-bg-secondary);
+  --hover-bg: var(--theme-hover);
+}
+
+/* Dark theme - Improved contrast and consistency */
+[data-theme="dark"] {
+  /* Primary backgrounds with better contrast */
+  --theme-bg-primary: #202124;
+  --theme-bg-secondary: #292a2d;
+  --theme-bg-tertiary: #3c4043;
+  --theme-surface: #292a2d;
+
+  /* Text colors with enhanced readability */
+  --theme-text-primary: #e8eaed;
+  --theme-text-secondary: #9aa0a6;
+  --text-primary: #e8eaed;
+  --text-secondary: #9aa0a6;
+  --text-tertiary: #5f6368;
+
+  /* Borders with better visibility */
+  --theme-border: #3c4043;
+  --border-light: #3c4043;
+  --border-dark: #5f6368;
+
+  /* Hover states */
+  --theme-hover: rgba(255, 255, 255, 0.1);
+
+  /* Scrollbar */
+  --theme-scrollbar-track: #202124;
+  --theme-scrollbar-thumb: #5f6368;
+
+  /* Widget colors */
+  --widget-header-bg: #292a2d;
+  --widget-content-bg: #202124;
+  --widget-border: #3c4043;
+
+  /* Counter cards with better visibility */
+  --counter-card-bg: #292a2d;
+  --counter-card-text: #e8eaed;
+
+  /* Link color */
+  --theme-link: #8ab4f8;
+
+  /* Accent colors for dark mode — lighter indigo for contrast */
+  --accent-primary: #7986cb;
+  --topbar-bg: #1e2028;
+  --accent-primary-hover: #5c6bc0;
+
+  /* Semantic Colors with better dark mode contrast */
+  --color-success: #81c995;
+  --color-warning: #fdd663;
+  --color-danger: #f28b82;
+  --color-info-blue: #78d9ec;
+  --color-neutral: #9aa0a6;
+
+  /* Counter colors optimized for dark backgrounds */
+
+  /* Chip colors */
+
+  /* Shadows for dark mode */
+
+  /* Input background */
+
+  /* Background variants */
+  --color-gold: #FFD54F;
+
+  /* Accent alpha variants */
+  --accent-primary-alpha-8: rgba(126, 115, 200, 0.12);
+  --accent-primary-alpha-10: rgba(126, 115, 200, 0.14);
+  --accent-primary-alpha-12: rgba(126, 115, 200, 0.16);
+  --accent-primary-alpha-15: rgba(126, 115, 200, 0.20);
+  --accent-primary-alpha-18: rgba(126, 115, 200, 0.22);
+  --accent-primary-alpha-20: rgba(126, 115, 200, 0.25);
+  --accent-primary-dark: #8b7fd6;
+
+  /* Shadow variants */
+  --shadow-subtle: 0 1px 3px rgba(0, 0, 0, 0.2);
+  --shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-focus: 0 2px 12px var(--accent-primary-alpha-18);
+  --shadow-accent-hover: 0 2px 8px var(--accent-primary-alpha-12);
+
+  /* Gradient backgrounds */
+  --gradient-purple-light: linear-gradient(135deg, #2d2b4e, #3a3560);
+  --gradient-purple-border: #4a4570;
+  --gradient-player-bg: linear-gradient(135deg, #2d2b4e 0%, #3a3560 100%);
+
+  /* Error chip */
+  --chip-error-bg: #3b1f1f;
+  --chip-error-border: #5c2b2b;
+
+  /* Counter card colors */
+  --counter-total: #9ca3af;
+  --counter-answered: #4ade80;
+  --counter-no-answer: #f87171;
+  --counter-outgoing: #60a5fa;
+  --counter-incoming: #34d399;
+
+  /* Input bg */
+  --input-bg: #2d3748;
+
+  /* Legacy compat aliases */
+  --background-primary: var(--theme-bg-primary);
+  --background-secondary: var(--theme-bg-secondary);
+  --hover-bg: var(--theme-hover);
+  /* These used to have NO dark value, so cards, borders and semantic colours
+     stayed light-mode in the dark theme. */
+  --bg-primary: #202124;
+  --bg-secondary: #292a2d;
+  --bg-tertiary: #3c4043;
+  --bg-elevated: #292a2d;
+  --text-muted: #5f6368;
+  --border-color: #3c4043;
+  --border-color-hover: #5f6368;
+  --divider-color: #3c4043;
+  --accent-success: #34d399;
+  --accent-warning: #fbbf24;
+  --accent-error: #f87171;
+  --accent-info: #60a5fa;
+  --theme-text-tertiary: #5f6368;
+}
+
+/* Global Font & Reset */
+html, body, #root {
+  font-family: var(--font-family);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: var(--theme-bg-primary);
+  color: var(--theme-text-primary);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Typography */
+* {
+  font-family: var(--font-family);
+  box-sizing: border-box;
+}
+
+button, input, textarea, select {
+  font-family: inherit;
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--theme-scrollbar-track, var(--bg-secondary));
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--theme-scrollbar-thumb, rgba(0, 0, 0, 0.2));
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--theme-scrollbar-thumb, rgba(0, 0, 0, 0.3));
+}
