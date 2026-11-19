@@ -77,7 +77,8 @@ $(AVD):
 
 emulator:
 	mkdir -p build
-	sg kvm -c '$(MISE) emulator -avd voipappz -port 5554 -no-audio -no-boot-anim -gpu swiftshader_indirect $(if $(HEADLESS),-no-window)' > build/emulator.log 2>&1 &
+	cmd='$(MISE) emulator -avd voipappz -port 5554 -no-audio -no-boot-anim -gpu swiftshader_indirect $(if $(HEADLESS),-no-window)'; \
+	  if [ -w /dev/kvm ]; then sh -c "$$cmd"; else sg kvm -c "$$cmd"; fi > build/emulator.log 2>&1 &
 	$(ADB) wait-for-device
 
 launch:

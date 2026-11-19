@@ -244,8 +244,8 @@ pub async fn preflight(settings: &Settings, env: &HashMap<String, String>) -> Ve
     }
     match repo {
         Some(dir) if appz => match crate::bot::read_spec(dir) {
-            Ok(spec) => checks.push(Check::new("Appz folder", Level::Ok, format!("{} ({})", dir.display(), spec.name))),
-            Err(e) => checks.push(Check::new("Appz folder", Level::Fail, e)),
+            Ok(spec) => checks.push(Check::new("Project folder", Level::Ok, format!("{} ({})", dir.display(), spec.name))),
+            Err(e) => checks.push(Check::new("Project folder", Level::Fail, e)),
         },
         None => checks.push(Check::new("App folder", Level::Fail, "Choose the voipappz/app checkout.")),
         Some(repo) if distro.is_none() && (is_network_path(&repo.to_string_lossy()) || repo.to_string_lossy().starts_with(r"\\?\UNC")) =>
@@ -606,7 +606,7 @@ pub fn onboarding_settings(mut settings: Settings, app_repo: &str, api_url: &str
     if app_repo.trim().is_empty() {
         // The appz only: its folder is the workspace.
         if bot_dir.trim().is_empty() {
-            return Err("Choose your appz folder (the Connectix folder with builder.toml).".into());
+            return Err("Choose your project folder (the folder with builder.toml, e.g. phone/).".into());
         }
         settings.api_url = Some(onboarding_api_url(api_url, api_dir_path.as_deref())?);
         settings.api_dir = api_dir_path;

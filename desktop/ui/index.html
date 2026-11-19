@@ -65,18 +65,22 @@
       </details>
       <p><button type="button" id="check-api">Sign in</button> <span id="login-state" role="status">Not signed in</span></p>
       <p class="hint">Kept only while Builder runs: never saved and never passed to the coding agent. You sign in again when Builder restarts.</p>
-      <h2>2. Your appz</h2>
-      <p>Choose your appz folder: the customer's Connectix (Elixir) project. The coding
-        agent changes it, and Builder runs it on this computer.</p>
-      <label for="bot-dir">Appz folder</label>
-      <div class="row"><input id="bot-dir" required placeholder="\\wsl.localhost\Debian\home\you\connectix"><button type="button" id="browse-bot">Browse</button></div>
+      <h2>2. What you build</h2>
+      <div class="row" role="radiogroup" aria-label="Platform" id="platforms">
+        <label><input type="radio" name="platform" value="web"> Web</label>
+        <label><input type="radio" name="platform" value="mobile" checked> Mobile</label>
+        <label title="After the mobile app"><input type="radio" name="platform" value="desktop" disabled> Desktop (later)</label>
+      </div>
+      <p id="platform-hint"></p>
+      <label for="bot-dir">Project folder</label>
+      <div class="row"><input id="bot-dir" required placeholder="\\wsl.localhost\Debian\home\you\voipappz\builder\phone"><button type="button" id="browse-bot">Browse</button></div>
       <p class="hint">A folder with a <code>builder.toml</code>. Builder runs its <code>make setup</code> once, then <code>make dev</code>. On Windows, choose the folder inside WSL (<code>\\wsl.localhost\&lt;distro&gt;\…</code>).</p>
       <p id="connection" role="status"></p>
       <button type="submit" id="start">Sign in and open Builder</button>
     </fieldset>
   </form>
   <ol id="wizard" aria-label="Setup steps" hidden></ol>
-  <p id="intro">Builder runs your appz with its own commands: <code>make setup</code> the
+  <p id="intro">Builder runs your project with its own commands: <code>make setup</code> the
     first time, then <code>make dev</code>. The first setup needs an internet
     connection and may take several minutes.</p>
   <details class="log" id="log"><summary>Setup details</summary>
@@ -96,8 +100,26 @@
         apiDir: '', botDir: document.getElementById('bot-dir').value.trim(),
         email: document.getElementById('api-email').value.trim(), password: document.getElementById('api-password').value };
     }
+    // Each platform is its own development environment: its own folder (with a
+    // builder.toml whose make setup installs that platform's tools), remembered
+    // here per platform. Builder opens one at a time.
+    const hints = {
+      web: 'The web app (connectix-io/app). Builder runs it and shows the page beside the chat.',
+      mobile: 'The phone app (phone/ in the builder repository). Builder installs Java, the Android SDK and the emulator once, then shows the phone beside the chat.',
+    };
+    const store = { get: k => { try { return localStorage.getItem(k); } catch { return null; } },
+                    set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } } };
+    const platform = () => document.querySelector('input[name=platform]:checked').value;
+    const showPlatform = () => { document.getElementById('platform-hint').textContent = hints[platform()] || ''; };
+    document.querySelectorAll('input[name=platform]').forEach(radio => radio.onchange = () => {
+      store.set('builder.platform', platform());
+      document.getElementById('bot-dir').value = store.get('builder.folder.' + platform()) || '';
+      showPlatform();
+    });
+    document.getElementById('bot-dir').addEventListener('change', event => store.set('builder.folder.' + platform(), event.target.value.trim()));
+    showPlatform();
     document.getElementById('browse-bot').onclick = async () => {
-      try { const path = await invoke('onboarding_folder', { api: false, bot: true }); if (path) document.getElementById('bot-dir').value = path; }
+      try { const path = await invoke('onboarding_folder', { api: false, bot: true }); if (path) { document.getElementById('bot-dir').value = path; store.set('builder.folder.' + platform(), path); } }
       catch (error) { connection.textContent = String(error); }
     };
     document.getElementById('check-api').onclick = async () => {
@@ -111,7 +133,7 @@
     };
     document.getElementById('onboarding').onsubmit = async (event) => {
       event.preventDefault(); submitting = true; document.getElementById('fields').disabled = true;
-      connection.textContent = 'Signing in and checking your appz folder…';
+      connection.textContent = 'Signing in and checking your project folder…';
       try {
         await invoke('onboarding_start', {appRepo: '', ...apiFields()});
         document.getElementById('api-password').value = '';
@@ -128,7 +150,10 @@
     document.getElementById('api-password').oninput = showLogin;
     invoke('app_version').then(version => { document.getElementById('version').textContent = 'v' + version; }).catch(() => {});
     invoke('onboarding_info').then(settings => {
-      document.getElementById('bot-dir').value = settings.bot_dir || '';
+      const saved = store.get('builder.platform');
+      if (saved && hints[saved]) document.querySelector(`input[name=platform][value=${saved}]`).checked = true;
+      document.getElementById('bot-dir').value = store.get('builder.folder.' + platform()) || settings.bot_dir || '';
+      showPlatform();
       document.getElementById('api-url').value = settings.api_dir ? 'https://switch.voipappz.io' : (settings.api_url || 'https://switch.voipappz.io');
       showLogin();
     }).catch(error => { connection.textContent = String(error); });
