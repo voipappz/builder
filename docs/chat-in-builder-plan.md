@@ -38,14 +38,28 @@ chat/                      the chat frontend (React 19, MUI, Vite)
 client/                    build output (gitignored), embedded by core/build.rs as today
 ```
 
-- `npm run build` in `chat/` writes `client/` (client.js, client.css,
-  assets). `core/build.rs` keeps embedding it, so the server code
-  (`/builder/*`, the page's CSP and nonce) does not change.
-- Dev: `make chat-dev` runs Vite with hot reload; Builder's `--client-url`
-  points at it, as it does today with the app's dev server. The module path in
-  `builder.rs` changes from `src/builder-client/main.jsx` to `src/main.jsx`.
-- CI and installers build `chat/` directly: no clone and no deploy key.
-  `scripts/client.sh` and `client.ref` are removed.
+- **Build contract:** `npm ci && npm run build` in `chat/` writes `client/`
+  with the same fixed names as today (`client.js`, one `client.css`,
+  `assets/`), relative base, CSS extracted. The build fails if `client.js` is
+  missing, since `core/build.rs` otherwise embeds nothing without a word. The
+  server code (`/builder/*`, CSP, nonce) does not change.
+- **The audio worklet** (`captureWorklet.js`, loaded with
+  `new URL(…, import.meta.url)`) is emitted as its own same-origin file, never
+  inlined: the CSP allows no `data:` or `blob:` scripts.
+- **Dev with hot reload:** today an embedded `client.js` always wins over
+  `--client-url`. Builder gets an explicit switch (`--client-dev`, or building
+  with an empty `VOIPAPPZ_BUILDER_CLIENT_DIR`) so the page loads Vite's
+  `src/main.jsx` with the nonce-bearing React refresh preamble; Vite's CORS and
+  HMR origins are checked through Builder's page. Commands are npm scripts
+  (`npm run dev` in `chat/`), as there is no root Makefile.
+- **Tauri:** `frontendDist: "ui"` stays for the setup screen; the chat stays
+  served by Builder's local server (Axum), with no second Tauri asset pipeline.
+- **CI and installers** build `chat/` before the Rust tests and packaging,
+  add `chat/**` to their triggers, and drop the clone and deploy key for the
+  chat. `scripts/client.sh` and `client.ref` go. The e2e jobs move Playwright
+  from `.client-app` to `chat/` (`NODE_PATH`); `scripts/e2e.sh` still clones
+  voipappz/app as the CLI's workspace (with the deploy key) and stops passing
+  the app's dev server as `--client-url`.
 
 ## Look: RustSIPPhone's style
 
@@ -74,8 +88,9 @@ Corners 10 to 14 px, text 13 to 16 px, spacing 8 by 6 px. Dark only at first.
 2. **Wording per kind:** "app" or "product" instead of "bot"; suggestions per
    kind (phone: explain the app, run the tests, change the sign-in screen).
 3. **Long lines wrap** in errors and action results (`overflow-wrap: anywhere`).
-4. **The chat reconnects by itself** after Builder restarts the agent or the
-   socket drops, with a short backoff, and says "Reconnecting…" meanwhile.
+4. **The chat reconnects by itself** when the socket drops: retries at 1, 2,
+   4, then every 5 s, says "Reconnecting…", then starts a new agent session
+   (the old one is gone with the agent). No general retry framework.
 
 ## Steps (each is its own PR)
 
@@ -92,9 +107,13 @@ Corners 10 to 14 px, text 13 to 16 px, spacing 8 by 6 px. Dark only at first.
 ## Checks
 
 - `chat/`: vitest (the existing chatState and botCall tests, plus new ones),
-  run by CI's rust job.
-- Rust: the existing tests that `/builder/client.js` is served with the CSP.
-- e2e: the page check (`scripts/e2e-appz-page.cjs`) still loads the chat.
+  run in CI before the Rust tests.
+- Rust: the tests that `/builder/client.js` is served with the CSP, now always
+  run (CI builds `client/` first, so they are not skipped).
+- A browser smoke check: Builder's page under the production CSP renders the
+  chat and loads the worklet; the Windows build is verified by the Installers
+  run.
+- Reviewed by Codex on 2026-11-19 ([codex-chat-plan-review.md](codex-chat-plan-review.md)).
 
 ## Open
 
