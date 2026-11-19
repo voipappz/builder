@@ -314,8 +314,10 @@ impl Bot {
     }
 
     pub async fn health(&self) -> Health {
-        // A native app has no address to ask: it is up while its process runs.
-        if self.spec.kind == Kind::App && !self.remote() {
+        // A native app with no page has no address to ask: it is up while its
+        // process runs. One with a page (the phone's emulator stream) is up
+        // when that page answers, so the pane does not open on an error.
+        if self.spec.kind == Kind::App && self.spec.page.is_none() && !self.remote() {
             let mut process = self.process.lock().await;
             let running = process.as_mut().is_some_and(|child| matches!(child.child.try_wait(), Ok(None)));
             return Health { up: running, ready: running };
@@ -653,6 +655,15 @@ async fn bridge(client: WebSocket, url: String, token: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The phone project shows the emulator's stream in Builder's pane.
+    #[test]
+    fn reads_the_phone_project() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../phone");
+        let spec = read_spec(&dir).unwrap();
+        assert_eq!((spec.kind, spec.port, spec.health.as_str(), spec.stop.as_deref()), (Kind::App, 8000, "/", Some("stop")));
+        assert!(spec.page.as_deref().unwrap().starts_with("/#!action=stream&udid=emulator-5554"));
+    }
 
     #[test]
     fn reads_a_bot_folder() {

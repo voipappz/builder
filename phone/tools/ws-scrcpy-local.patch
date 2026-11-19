@@ -1,0 +1,30 @@
+diff --git a/src/server/services/HttpServer.ts b/src/server/services/HttpServer.ts
+index f941dfc..3f07c04 100644
+--- a/src/server/services/HttpServer.ts
++++ b/src/server/services/HttpServer.ts
+@@ -127,7 +127,7 @@ export class HttpServer extends TypedEmitter<HttpServerEvents> implements Servic
+                 server = http.createServer(options, currentApp);
+             }
+             this.servers.push({ server, port });
+-            server.listen(port, () => {
++            server.listen(port, '127.0.0.1', () => {
+                 Utils.printListeningMsg(proto, port, PATHNAME);
+             });
+         });
+diff --git a/src/server/services/WebSocketServer.ts b/src/server/services/WebSocketServer.ts
+index 067d1b5..dc06565 100644
+--- a/src/server/services/WebSocketServer.ts
++++ b/src/server/services/WebSocketServer.ts
+@@ -31,7 +31,11 @@ export class WebSocketServer implements Service {
+     public attachToServer(item: ServerAndPort): WSServer {
+         const { server, port } = item;
+         const TAG = `WebSocket Server {tcp:${port}}`;
+-        const wss = new WSServer({ server });
++        // Only Builder's pane (this page, on this computer) may connect: the
++        // socket controls the device and opens a shell, so other web pages,
++        // which send their own Origin, are refused.
++        const allowed = [`http://127.0.0.1:${port}`, `http://localhost:${port}`];
++        const wss = new WSServer({ server, verifyClient: (info: { origin: string }) => allowed.includes(info.origin) });
+         wss.on('connection', async (ws: WS, request) => {
+             if (!request.url) {
+                 ws.close(4001, `[${TAG}] Invalid url`);
