@@ -34,7 +34,7 @@ chat/                      the chat frontend (React 19, MUI, Vite)
   src/BuilderApp.jsx, BotPanel.jsx, useBuilderChat.js, acpConnection.js,
       phoenixSocket.js, chatState.js, botCall.js, captureWorklet.js
   src/chat-ui/             copy of voipappz/app packages/chat-ui (MIT, VoIPappz)
-  src/theme/               the theme, with RustSIPPhone's colours (below)
+  src/theme/               the app's theme, as it is
 client/                    build output (gitignored), embedded by core/build.rs as today
 ```
 
@@ -61,24 +61,9 @@ client/                    build output (gitignored), embedded by core/build.rs 
   voipappz/app as the CLI's workspace (with the deploy key) and stops passing
   the app's dev server as `--client-url`.
 
-## Look: RustSIPPhone's style
+## Look
 
-The desktop phone (RustSIPPhone, egui, MIT) is the reference for the look.
-Its tokens become the theme's dark palette:
-
-| Token | Colour | Use |
-|---|---|---|
-| BG | `#12151A` | page background |
-| SURFACE | `#1B2027` | panels, the chat input |
-| SURFACE_HI | `#262D37` | hover, selected tab, chips |
-| TEXT | `#ECEFF4` | text |
-| MUTED | `#8C96A5` | secondary text |
-| ACCENT | `#4C8DFF` | buttons, links, focus |
-| GREEN | `#2FB35A` | ready, success |
-| RED | `#E5484D` | errors, stopped |
-| AMBER | `#E0A030` | warnings, starting |
-
-Corners 10 to 14 px, text 13 to 16 px, spacing 8 by 6 px. Dark only at first.
+The current look stays (the app's theme, copied with the chat).
 
 ## Fixes made during the move
 
@@ -99,10 +84,9 @@ Corners 10 to 14 px, text 13 to 16 px, spacing 8 by 6 px. Dark only at first.
    installer's chat looks and works as in v0.1.29.
 2. **Fixes 1 to 4** above, with unit tests (vitest) for the kind logic and the
    reconnect.
-3. **The look:** RustSIPPhone's palette and spacing in the theme.
-4. **Remove the old copy:** a PR in voipappz/app deleting `src/builder-client`
+3. **Remove the old copy:** a PR in voipappz/app deleting `src/builder-client`
    and `vite.builder.config.js` (the app keeps `chat-ui`).
-5. **Release** (v0.1.30 or later).
+4. **Release** (v0.1.30 or later).
 
 ## Checks
 
@@ -117,5 +101,5 @@ Corners 10 to 14 px, text 13 to 16 px, spacing 8 by 6 px. Dark only at first.
 
 ## Open
 
-- A light theme, and Hebrew, later if wanted.
+- Hebrew, later if wanted.
 - Who keeps `chat-ui` in step: the Builder copy and the app's copy can drift.
