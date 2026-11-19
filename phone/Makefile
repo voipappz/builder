@@ -10,7 +10,10 @@ WS_SCRCPY = .tools/ws-scrcpy
 # The emulator this project starts (serial emulator-5554, as in builder.toml's
 # page); `make install` on a USB phone: make install ADB="mise exec -- adb".
 ADB = $(MISE) adb -s emulator-5554
-AVD = $(HOME)/.android/avd/voipappz.ini
+# Where avdmanager writes the device and the emulator reads it: pinned, as
+# the tools' defaults differ between machines (CI writes elsewhere).
+export ANDROID_AVD_HOME := $(HOME)/.android/avd
+AVD = $(ANDROID_AVD_HOME)/voipappz.ini
 WS_SCRCPY_REF = cd6cea6ebde17af6685c2b325183fc24bef9d52b
 
 .PHONY: setup dev stop test registercheck probe apk install avd emulator launch
@@ -73,13 +76,14 @@ AVD_IMAGE = system-images;android-35;google_apis;x86_64
 avd: $(AVD)
 $(AVD):
 	yes | $(MISE) sdkmanager --install "emulator" "$(AVD_IMAGE)"
+	mkdir -p $(ANDROID_AVD_HOME)
 	echo no | $(MISE) avdmanager create avd -n voipappz -k "$(AVD_IMAGE)" -d pixel_7 --force
 
 emulator:
 	mkdir -p build
 	cmd='$(MISE) emulator -avd voipappz -port 5554 -no-audio -no-boot-anim -gpu swiftshader_indirect $(if $(HEADLESS),-no-window)'; \
 	  if [ -w /dev/kvm ]; then sh -c "$$cmd"; else sg kvm -c "$$cmd"; fi > build/emulator.log 2>&1 &
-	$(ADB) wait-for-device
+	timeout 180 $(ADB) wait-for-device || { echo "The emulator did not start; build/emulator.log:"; tail -20 build/emulator.log; exit 1; }
 
 launch:
 	$(ADB) shell monkey -p io.voipappz.phone -c android.intent.category.LAUNCHER 1 >/dev/null
