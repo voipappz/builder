@@ -101,9 +101,10 @@ export default function BuilderApp({ info }) {
   const view = projectView(info.bot, info.workspaceName);
   const [input, setInput] = useState('');
 
+  // The draft stays in the box until the chat accepts it (not while it
+  // reconnects).
   const send = (text) => {
-    chat.send(text ?? input);
-    setInput('');
+    if (chat.send(text ?? input)) setInput('');
   };
 
   return (
