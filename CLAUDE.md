@@ -49,7 +49,9 @@ make test | make apk | make install | make probe | make registercheck
 CI: `.github/workflows/test.yml` (Builder: rust with the chat's tests and
 build, contracts, e2e), `installers.yml` (Builder installers; release on `v*`
 tags), `phone.yml` (phone: Android on Linux, the mobile dev environment with
-the emulator, iOS simulator on macOS).
+the emulator, Builder with the phone project end to end in a browser
+(`scripts/e2e-phone.sh`), iOS simulator on macOS; runs on changes to `phone/`,
+`core/`, `cli/` or `chat/`).
 
 ## Rules
 

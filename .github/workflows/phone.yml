@@ -5,9 +5,9 @@ name: Phone
 on:
   push:
     branches: [main]
-    paths: ['phone/**', '.github/workflows/phone.yml']
+    paths: ['phone/**', 'core/**', 'cli/**', 'chat/**', 'scripts/e2e-phone*', 'Cargo.lock', '.github/workflows/phone.yml']
   pull_request:
-    paths: ['phone/**', '.github/workflows/phone.yml']
+    paths: ['phone/**', 'core/**', 'cli/**', 'chat/**', 'scripts/e2e-phone*', 'Cargo.lock', '.github/workflows/phone.yml']
   workflow_dispatch:
 
 defaults:
@@ -79,6 +79,47 @@ jobs:
           path: |
             phone/dev.log
             phone/build/emulator.log
+          if-no-files-found: ignore
+
+  # Builder with the phone project, as a user opens the Mobile platform:
+  # Builder runs the phone's setup and make dev itself; Chromium then checks
+  # the chat and the live phone in Builder's pane. See scripts/e2e-phone.sh.
+  builder-phone:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - name: KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - uses: jdx/mise-action@v2
+        with:
+          working_directory: phone
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: chat/.nvmrc
+      - name: Build the chat (chat/ into client/)
+        working-directory: chat
+        run: npm ci && npm run build
+      - name: Chromium for the page check
+        working-directory: chat
+        run: npx playwright install --with-deps chromium
+      - name: Builder with the phone project, end to end
+        env:
+          NODE_PATH: ${{ github.workspace }}/chat/node_modules
+        run: scripts/e2e-phone.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: builder-phone
+          path: ${{ runner.temp }}/builder-e2e-phone/builder.png
           if-no-files-found: ignore
 
   # The iPhone targets build only on a Mac (on Linux they are skipped), so
