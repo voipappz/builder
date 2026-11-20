@@ -17,8 +17,7 @@ on:
       - 'branding/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - 'client.ref'
-      - 'scripts/client.sh'
+      - 'chat/**'
       - '.github/workflows/installers.yml'
 
 permissions:
@@ -39,27 +38,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: chat/.nvmrc
 
-      # The chat client, built from voipappz/app at client.ref and embedded
-      # by core/build.rs, so the installer needs no running app.
-      # voipappz/app is private: a read-only deploy key (secret APP_DEPLOY_KEY)
-      # behind the SSH alias github.com-app, so it never collides with another
-      # repository's key on the same host.
-      - name: voipappz/app deploy key
+      - name: Build the chat (chat/ into client/)
         shell: bash
-        env:
-          KEY: ${{ secrets.APP_DEPLOY_KEY }}
-        run: |
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$KEY" > ~/.ssh/voipappz-app && chmod 600 ~/.ssh/voipappz-app
-          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
-          printf 'Host github.com-app\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/voipappz-app\n  IdentitiesOnly yes\n' >> ~/.ssh/config
-      - name: Build the chat client
-        shell: bash
-        env:
-          APP_REPO: git@github.com-app:voipappz/app.git
-        run: scripts/client.sh
+        working-directory: chat
+        run: npm ci && npm run build
 
       - name: Verify Windows startup
         run: cargo test --locked -p builder-core launcher::tests --lib
@@ -100,7 +84,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: chat/.nvmrc
 
       - name: WebKitGTK and the bundlers' tools
         run: |
@@ -108,22 +92,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev librsvg2-dev libssl-dev patchelf file
 
-      # voipappz/app is private: a read-only deploy key (secret APP_DEPLOY_KEY)
-      # behind the SSH alias github.com-app, so it never collides with another
-      # repository's key on the same host.
-      - name: voipappz/app deploy key
+      - name: Build the chat (chat/ into client/)
         shell: bash
-        env:
-          KEY: ${{ secrets.APP_DEPLOY_KEY }}
-        run: |
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$KEY" > ~/.ssh/voipappz-app && chmod 600 ~/.ssh/voipappz-app
-          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
-          printf 'Host github.com-app\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/voipappz-app\n  IdentitiesOnly yes\n' >> ~/.ssh/config
-      - name: Build the chat client
-        env:
-          APP_REPO: git@github.com-app:voipappz/app.git
-        run: scripts/client.sh
+        working-directory: chat
+        run: npm ci && npm run build
 
       - name: Build
         working-directory: desktop

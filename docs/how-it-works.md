@@ -9,8 +9,7 @@ coding agent, and see the result running next to the chat.
 Browser tab  http://127.0.0.1:9832/?secret=…
 │
 ├─ page shell ............ Builder's local server
-├─ chat screen ........... ../app code (src/builder-client, packages/chat-ui),
-│                          served by the app's Vite dev server (localhost:3000)
+├─ chat screen ........... chat/ (React), built into Builder (/builder/client.js)
 ├─ Admin / User previews . the same dev server on admin.localhost / user.localhost
 │
 └─ websocket (ACP) ─────▶ Builder's local server
@@ -25,12 +24,12 @@ Browser tab  http://127.0.0.1:9832/?secret=…
 | Product / voice bot | `core/src/bot.rs` | Runs a product (Connectix) or bot folder's `make setup`/`make dev`/stop target, its health, restart, log, dev MCP, and the audio bridge (`/bot/*`) |
 | CLI | `cli/` (`voipappz-builder`) | Starts Builder from a terminal |
 | Desktop app | `desktop/` | Tray icon that starts Builder and opens the browser |
-| Chat screen | `../app` `src/builder-client/` | `ChatView` over ACP, permission bar, agent modes, previews |
+| Chat screen | `chat/` (React + Vite, built into `client/` and embedded) | `ChatView` over ACP, permission bar, agent modes, previews |
 | Agent | Claude Code via `@agentclientprotocol/claude-agent-acp`, from the app's own packages (`bin/npm.sh exec -- claude-agent-acp`; `npx` until the app has it) | Reads and edits the app, on the user's own Claude account |
 
-The chat screen is app code, so a chat change ships with the app. The local
-server does what a web page cannot: start programs and read files. It runs
-no Node itself; everything Node is the app's Makefile.
+The chat screen is Builder's own code (`chat/`), built into the binary, so a
+chat change ships with a Builder release. The local server does what a web
+page cannot: start programs and read files. It runs no Node itself.
 
 ## What happens on start
 
@@ -115,6 +114,9 @@ run `make dev` and `make tenant` in `voipappz-api`.
 
 ## Changing the chat
 
-Edit `src/builder-client/` in the app (or in `../app-builder` to see it live:
-the dev server reloads it). It needs only lint locally; its unit tests run in
-the app's CI. The ACP updates it understands are listed in `chatState.js`.
+Edit `chat/src/`. `npm test` runs its tests and `npm run build` rebuilds
+`client/`, which the next `cargo build` embeds. To see changes live, run
+`npm run dev` in `chat/` (port 5174) and start Builder with
+`VOIPAPPZ_BUILDER_CLIENT_DEV=http://localhost:5174`. Use Node
+22 (`chat/.nvmrc`). The ACP updates it understands are listed in
+`chatState.js`.
