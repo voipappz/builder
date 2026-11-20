@@ -108,9 +108,8 @@ A component missing an event the customer needs is a change for
 | `chat/` | The chat screen (React + Vite, Node 22); `npm run build` writes `client/` |
 | `client/` | Built chat (gitignored), embedded by `core/build.rs` |
 | `scripts/e2e.sh` | Old app-path end to end (React app + `make dev`) |
-| `scripts/e2e-appz.sh`, `scripts/e2e-appz-page.cjs` | Appz end to end: Connectix only, the page checked in Chromium |
 | `contracts/` | ACP/MCP contract tests (Node) |
-| `.github/workflows/test.yml` | rust, contracts, e2e, e2e-appz |
+| `.github/workflows/test.yml` | rust (with the chat), contracts, e2e |
 | `.github/workflows/installers.yml` | Windows .exe (+ Linux .deb/AppImage after #4); release on `v*` tags |
 
 ## Commands
@@ -120,7 +119,6 @@ export PATH=$HOME/.cargo/bin:$PATH        # cargo is not on PATH by default
 (cd chat && npm ci && npm test && npm run build)   # the chat into client/ (before cargo build, for a real page)
 cargo test                                 # core + cli; the desktop crate needs GTK/WebKit (CI builds it)
 cargo run -p builder-cli -- --bot-dir <appz folder> --api-url https://switch.voipappz.io --url-file <file>
-CONNECTIX_DIR=<appz folder> NODE_PATH=$PWD/chat/node_modules scripts/e2e-appz.sh
 ```
 
 **Release:** bump `version` in `Cargo.toml` and `desktop/tauri.conf.json`,
@@ -153,8 +151,6 @@ tag; Installers publishes the release. Check that the tag's run started.
 | Appz-only mode (no React app, no previews, agent via npx in the appz) | builder #1 | **v0.1.19** |
 | Onboarding: sign in with your VoipAppz account first (required), then the appz folder | builder #1 | **v0.1.19** |
 | Tray and setup-window wording for the appz | builder #2 | **v0.1.20** (latest) |
-| CI `e2e-appz` (deploy key `voipappz/builder CI`, secret `CONNECTIX_DEPLOY_KEY`) | builder #3 | open; waits for connectix #4 |
-| Connectix `make setup` builds the admin assets (`make admin-ui`, Docker only), found by e2e-appz | connectix #4 | open |
 | Linux packages (.deb for Ubuntu 22.04+, AppImage) in Installers | builder #4 | open; CI run passed (Linux and Windows) |
 | Decisions: sip.js phone; conversations over NATS to the mothership (Mnesia = live copy); end-user login mocked for M1b; demo on a real VoipAppz account | `docs/appz-process.md` | session log on builder #3's branch |
 

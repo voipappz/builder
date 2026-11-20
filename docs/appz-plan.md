@@ -1,3 +1,5 @@
+> **History (superseded 2026-11-17).** The Elixir appz (Connectix) is no longer used; see `CLAUDE.md`.
+
 # The appz plan
 
 **The target: a customer builds their own application in Builder.** They sign

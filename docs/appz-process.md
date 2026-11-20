@@ -1,3 +1,5 @@
+> **History (superseded 2026-11-17).** The Elixir appz (Connectix) is no longer used; see `CLAUDE.md`.
+
 # The appz process: from the mothership to a customer's app
 
 How VoipAppz ships a custom app ("appz") per customer, and how Builder is the

@@ -1,3 +1,5 @@
+> **History (superseded 2026-11-17).** The Elixir appz (Connectix) is no longer used; see `CLAUDE.md`.
+
 # The demo: your calls, in your own app, built with Builder
 
 What a prospect sees in ten minutes, and what has to be true beforehand.
