@@ -46,7 +46,11 @@
     @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(.82); } }
     details.log summary { cursor: pointer; font-weight: 600; margin: 12px 0 8px; }
     [hidden] { display: none !important; }
-  </style>
+      #server-state .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #9aa0a6; vertical-align: baseline; }
+    #server-state.ok .dot { background: #2fb35a; }
+    #server-state.bad .dot { background: #e5484d; }
+    #server-state.bad { color: #e5484d; overflow-wrap: anywhere; }
+</style>
 </head>
 <body>
   <header><span class="brand">VoipAppz Builder <span id="version"></span></span><span id="timer">Starting…</span></header>
@@ -56,19 +60,21 @@
   <p id="action-note" class="hint" hidden></p>
   <form id="onboarding">
     <fieldset id="fields">
-      <legend>1. Sign in with your VoipAppz account</legend>
+      <legend>1. Your VoipAppz server</legend>
+      <label for="api-url">Address</label>
+      <div class="row"><input id="api-url" type="url" required value="https://switch.voipappz.io"><button type="button" id="check-server">Check</button></div>
+      <p id="server-state" role="status"><span class="dot" aria-hidden="true"></span> <span id="server-text">Checking the server…</span></p>
+      <h2>2. Sign in with your VoipAppz account</h2>
       <p>Builder works as you: your account's platform (users, numbers, calls and data). The agent gets read-only tools on it.</p>
       <label for="api-email">Email</label><input id="api-email" type="email" required autocomplete="username">
       <label for="api-password">Password</label><input id="api-password" type="password" required autocomplete="current-password">
-      <details><summary>VoipAppz address</summary>
-        <label for="api-url">Address</label><input id="api-url" type="url" required value="https://switch.voipappz.io">
-      </details>
       <p><button type="button" id="check-api">Sign in</button> <span id="login-state" role="status">Not signed in</span></p>
       <p class="hint">Kept only while Builder runs: never saved and never passed to the coding agent. You sign in again when Builder restarts.</p>
-      <h2>2. What you build</h2>
+      <h2>3. What you build</h2>
       <div class="row" role="radiogroup" aria-label="Platform" id="platforms">
         <label><input type="radio" name="platform" value="web"> Web</label>
         <label><input type="radio" name="platform" value="mobile" checked> Mobile</label>
+        <label><input type="radio" name="platform" value="extension"> Chrome extension</label>
         <label title="After the mobile app"><input type="radio" name="platform" value="desktop" disabled> Desktop (later)</label>
       </div>
       <p id="platform-hint"></p>
@@ -105,6 +111,7 @@
     // here per platform. Builder opens one at a time.
     const hints = {
       web: 'The web app (connectix-io/app). Builder runs it and shows the page beside the chat.',
+      extension: 'A Chrome extension project (a folder with a builder.toml). Builder runs its make dev and shows its page beside the chat.',
       mobile: 'The phone app (phone/ in the builder repository). Builder installs Java, the Android SDK and the emulator once, then shows the phone beside the chat.',
     };
     const store = { get: k => { try { return localStorage.getItem(k); } catch { return null; } },
@@ -122,6 +129,23 @@
       try { const path = await invoke('onboarding_folder', { api: false, bot: true }); if (path) { document.getElementById('bot-dir').value = path; store.set('builder.folder.' + platform(), path); } }
       catch (error) { connection.textContent = String(error); }
     };
+    // Step 1: the server, before any login. Green when it is reachable and
+    // healthy, red with the reason when not; checked on open and on change.
+    const serverState = document.getElementById('server-state');
+    let serverCheck = 0;
+    const checkServer = async () => {
+      const mine = ++serverCheck;
+      serverState.className = '';
+      document.getElementById('server-text').textContent = 'Checking the server…';
+      let ok = false, text;
+      try { text = await invoke('onboarding_server', { apiUrl: document.getElementById('api-url').value.trim() }); ok = true; }
+      catch (error) { text = String(error); }
+      if (mine !== serverCheck) return;
+      serverState.className = ok ? 'ok' : 'bad';
+      document.getElementById('server-text').textContent = text;
+    };
+    document.getElementById('check-server').onclick = checkServer;
+    document.getElementById('api-url').addEventListener('change', checkServer);
     document.getElementById('check-api').onclick = async () => {
       const button = document.getElementById('check-api'); button.disabled = true;
       const state = document.getElementById('login-state');
@@ -156,6 +180,7 @@
       showPlatform();
       document.getElementById('api-url').value = settings.api_dir ? 'https://switch.voipappz.io' : (settings.api_url || 'https://switch.voipappz.io');
       showLogin();
+      checkServer();
     }).catch(error => { connection.textContent = String(error); });
     // The wizard: one row per setup step. Steps before the current one are
     // done, the current one runs (or failed), the rest wait. The last plain

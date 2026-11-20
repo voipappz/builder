@@ -51,6 +51,12 @@ async fn onboarding_check(api_url: String, api_dir: String, email: String, passw
     launcher::check_api_connection(&url, &email, &password).await
 }
 
+/// Step 1 of setup: is the server reachable and healthy (no login needed).
+#[tauri::command]
+async fn onboarding_server(api_url: String) -> Result<String, String> {
+    launcher::check_server(&api_url).await
+}
+
 #[tauri::command]
 async fn onboarding_start(app: AppHandle, app_repo: String, api_url: String, api_dir: String, bot_dir: String, email: String, password: String) -> Result<(), String> {
     let settings = launcher::onboarding_settings(Settings::load()?, &app_repo, &api_url, &api_dir, &bot_dir)?;
@@ -350,7 +356,7 @@ pub fn run() {
     info!("VoipAppz Builder {}", VERSION);
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![app_version, app_login, startup_progress, onboarding_info, onboarding_folder, onboarding_check, onboarding_start, restart_builder])
+        .invoke_handler(tauri::generate_handler![app_version, app_login, startup_progress, onboarding_info, onboarding_folder, onboarding_check, onboarding_server, onboarding_start, restart_builder])
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tauri::async_runtime::spawn(open_page(app.clone()));
         }))
