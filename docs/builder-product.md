@@ -59,6 +59,7 @@ a change works everywhere takes longer than making it.
 | **Web** | connectix-io/app | The page in the pane (Builder does this today) | Nothing new |
 | **Android** | `phone/` | The Android emulator on the PC (in WSL, with KVM), shown **inside Builder's pane**: the emulator streams its screen to a web page (Google's emulator WebRTC stream, or ws-scrcpy), which the pane shows like any page; touch and keys go back. Plus the log | The PC only (no phone, no cable); the user in the `kvm` group |
 | **iOS** | `phone/` | **Cannot run on a PC:** Apple's simulator runs only on macOS. On the PC, Builder shows the iOS build and test results from CI (GitHub's macOS runner already builds and tests it); viewing the simulator inside Builder needs a remote Mac streamed into the pane, later | A cloud Mac, only for viewing |
+| **Chrome extension** | A browser extension project (to be created) | The extension's page or popup in the pane; loading it into Chrome itself comes later | A project folder with a `builder.toml` |
 | **Desktop** (later) | Rust phone or Compose desktop | Its own window, plus the log | Decided after mobile |
 
 ## Releases (each one usable on its own, ordered by risk)

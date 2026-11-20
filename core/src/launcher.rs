@@ -478,6 +478,46 @@ async fn answers(url: &str) -> bool {
     client.get(url).send().await.is_ok()
 }
 
+/// Why a request got no answer, in words a person can act on.
+fn request_failure(error: &reqwest::Error) -> String {
+    let mut cause = String::new();
+    let mut source = std::error::Error::source(error);
+    while let Some(inner) = source { cause = inner.to_string(); source = inner.source(); }
+    let kind = if error.is_timeout() { "no reply in time (a slow network, a proxy or a firewall)" }
+        else if error.is_connect() { "could not connect (check the address, the network, a proxy or a firewall)" }
+        else { "the request failed" };
+    if cause.is_empty() { kind.to_string() } else { format!("{kind}: {cause}") }
+}
+
+/// What an unauthenticated answer of `/api/mcp` says about the server: the
+/// API is there when it asks for a login (401) or answers; a 5xx is a server
+/// that is reachable but not healthy.
+fn server_state(status: u16) -> Result<&'static str, String> {
+    match status {
+        200..=299 | 401 | 403 | 405 => Ok("Reachable and healthy"),
+        404 => Err("Reachable, but this is not a VoipAppz API address (no /api/mcp).".into()),
+        code => Err(format!("Reachable, but not healthy (HTTP {code}). Try again shortly.")),
+    }
+}
+
+/// The setup screen's first step: is the server at `api_url` reachable and
+/// healthy, before any login is typed.
+pub async fn check_server(api_url: &str) -> Result<String, String> {
+    let api_url = api_url.trim().trim_end_matches('/');
+    if !valid_origin(api_url) {
+        return Err("Use an HTTPS API address, or HTTP on localhost for a local API.".into());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?;
+    match client.get(format!("{api_url}/api/mcp")).send().await {
+        Ok(r) => server_state(r.status().as_u16()).map(str::to_string),
+        Err(e) => Err(format!("Not reachable: {}", request_failure(&e))),
+    }
+}
+
 /// The API's MCP server, after checking the API answers and accepts the
 /// login. Builder offers it to the agent read-only. The error says why the
 /// tools are off.
@@ -509,7 +549,7 @@ pub async fn api_mcp_server(api_url: &str, basic: Option<&str>) -> Result<ApiMcp
             }
         }
         Ok(r) => return Err(format!("{}/api/mcp answered {} for the VA_MCP_BASIC login", api_url, r.status())),
-        Err(_) => return Err(format!("{}/api/mcp does not answer", api_url)),
+        Err(e) => return Err(format!("{}/api/mcp does not answer: {}", api_url, request_failure(&e))),
     }
     Ok(ApiMcp {
         url: format!("{}/api/mcp", api_url),
@@ -1332,6 +1372,23 @@ mod tests {
         std::fs::write(dir.join(".env"), "VA_WEB_PORT=evil.example\n").unwrap();
         assert_eq!(api_url_from_dir(&dir), None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn server_state_reads_the_unauthenticated_answer() {
+        assert_eq!(server_state(401), Ok("Reachable and healthy"));
+        assert_eq!(server_state(200), Ok("Reachable and healthy"));
+        assert!(server_state(502).unwrap_err().contains("not healthy (HTTP 502)"));
+        assert!(server_state(404).unwrap_err().contains("not a VoipAppz API address"));
+    }
+
+    #[tokio::test]
+    async fn check_server_says_why_it_is_not_reachable() {
+        assert!(check_server("ftp://x").await.unwrap_err().contains("HTTPS"));
+        // Nothing listens on this loopback port.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let error = check_server(&format!("http://127.0.0.1:{port}")).await.unwrap_err();
+        assert!(error.starts_with("Not reachable: could not connect"), "{error}");
     }
 
     #[test]
