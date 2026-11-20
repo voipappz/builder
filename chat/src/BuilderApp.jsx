@@ -6,26 +6,13 @@ import AddCommentIcon from '@mui/icons-material/AddComment';
 import { ChatView } from './chat-ui';
 import { useBuilderChat } from './useBuilderChat';
 import BotPanel from './BotPanel';
+import { projectView } from './projectView';
 import logo from './logo.png';
 
 const SUGGESTIONS = [
   { label: 'Find the call history screen', prompt: 'Find the component that renders the call history list and tell me its file and line.' },
   { label: 'Explain the extensions screen', prompt: 'Explain how the extensions screen loads and shows its data.' },
   { label: 'Add a search field', prompt: 'Add a search field above the extensions list that filters by name or number as I type.' }
-];
-
-// With a voice bot, the agent changes the bot rather than the app.
-const BOT_SUGGESTIONS = [
-  { label: 'Explain this bot', prompt: 'Explain how this voice bot works: its pipeline, where the prompt and greeting live, and how to run its tests.' },
-  { label: 'Change the greeting', prompt: 'Change the greeting to a short, friendly English greeting, run make test, and tell me when to restart the bot.' },
-  { label: 'Run the tests', prompt: 'Run make test for this bot and summarize the result.' }
-];
-
-// With a product (a Connectix appz), the agent changes its Elixir code.
-const PRODUCT_SUGGESTIONS = [
-  { label: 'Explain this appz', prompt: 'Explain how this appz works: where conversations are handled, which tools the agent has, and how to run its tests.' },
-  { label: 'Add a tool', prompt: 'Add a tool the bot can call that looks up a contact by phone number through the VoipAppz API, with a test, then run make test.' },
-  { label: 'Run the tests', prompt: 'Run make test and summarize the result.' }
 ];
 
 const STATUS_COLOR = { ok: 'var(--color-success)', error: 'var(--color-danger)', neutral: 'var(--theme-text-tertiary)' };
@@ -54,11 +41,12 @@ function PermissionBar({ permission, onAnswer }) {
   );
 }
 
-// With a product (Connectix), its own page is the Product tab, first; the
-// Bot tab then holds its status, restart and log. The Admin and User
+// A project with a page (a product, or a native app such as the phone's
+// emulator stream) shows that page first, then Status (status, restart,
+// actions, log); a voice bot has a Bot tab to talk to it. The Admin and User
 // previews show only when Builder runs the app locally (`previews` set).
-function Previews({ previews, bot, secret }) {
-  const productUrl = bot?.kind === 'product' ? bot.pageUrl : null;
+function Previews({ previews, bot, secret, view }) {
+  const productUrl = view?.pageUrl || null;
   const frames = { ...(productUrl ? { product: productUrl } : {}), ...(previews || {}) };
   const [role, setRole] = useState(productUrl ? 'product' : bot ? 'bot' : 'admin');
   const [reloadKey, setReloadKey] = useState(0);
@@ -70,7 +58,7 @@ function Previews({ previews, bot, secret }) {
       <Box sx={{ display: 'flex', alignItems: 'center', px: 1, borderBottom: '1px solid var(--theme-border)', backgroundColor: 'var(--theme-bg-secondary)' }}>
         <Tabs value={role} onChange={(_, value) => setRole(value)} sx={{ minHeight: 40, '& .MuiTab-root': { minHeight: 40 } }}>
           {productUrl && <Tab value="product" label={bot.name} />}
-          {bot && <Tab value="bot" label={productUrl ? 'Status' : 'Bot'} />}
+          {bot && <Tab value="bot" label={view.statusTab} />}
           {frames.admin && <Tab value="admin" label="Admin" />}
           {frames.user && <Tab value="user" label="User" />}
         </Tabs>
@@ -91,7 +79,7 @@ function Previews({ previews, bot, secret }) {
       {/* Stays mounted, so a call keeps going while you look at the previews. */}
       {bot && (
         <Box sx={{ flex: 1, display: isBot ? 'flex' : 'none', minHeight: 0 }}>
-          <BotPanel bot={bot} secret={secret} />
+          <BotPanel bot={bot} secret={secret} view={view} />
         </Box>
       )}
       {/* All stay mounted so each keeps its own login while switching tabs. */}
@@ -110,6 +98,7 @@ function Previews({ previews, bot, secret }) {
 
 export default function BuilderApp({ info }) {
   const chat = useBuilderChat(info);
+  const view = projectView(info.bot, info.workspaceName);
   const [input, setInput] = useState('');
 
   const send = (text) => {
@@ -170,18 +159,14 @@ export default function BuilderApp({ info }) {
             onStop={chat.stop}
             emptyState={{
               title: 'What should we build?',
-              description: info.bot?.kind === 'product'
-                ? `The agent works on ${info.bot.name} in ${info.workspaceName}. See it in the ${info.bot.name} tab; tests and deploy are in Status.`
-                : info.bot
-                  ? `The agent works on the ${info.bot.name} bot in ${info.workspaceName}. Talk to it in the Bot tab.`
-                  : `The agent works in ${info.workspaceName}. Changes show in the previews.`,
-              suggestions: info.bot?.kind === 'product' ? PRODUCT_SUGGESTIONS : info.bot ? BOT_SUGGESTIONS : SUGGESTIONS,
+              description: view ? view.description : `The agent works in ${info.workspaceName}. Changes show in the previews.`,
+              suggestions: view ? view.suggestions : SUGGESTIONS,
               onSuggestion: send
             }}
           />
         </Box>
       </Box>
-      <Previews previews={info.previews} bot={info.bot} secret={info.secret} />
+      <Previews previews={info.previews} bot={info.bot} secret={info.secret} view={view} />
     </Box>
   );
 }

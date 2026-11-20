@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { connectSocket } from './phoenixSocket';
 import { openAcp } from './acpConnection';
 import { addUserMessage, applyUpdate, finishTurn } from './chatState';
+import { reconnectDelay } from './projectView';
 
 const AUTH_REQUIRED = -32000;
 // Builder works in its own worktree, so file edits need no prompt there;
@@ -52,46 +53,74 @@ export function useBuilderChat(info) {
     setStatus({ tone: 'ok', label: 'Ready' });
   }, []);
 
+  // One connection at a time. When it drops (Builder restarted the agent,
+  // the server restarted), reconnect with a short backoff and start a new
+  // session: the old one ended with the agent.
   useEffect(() => {
     let closed = false;
-    const socket = connectSocket(socketUrl(info), {
-      onClose: () => !closed && setStatus({ tone: 'error', label: 'Disconnected from Builder. Reload to reconnect.' })
-    });
+    let socket = null;
+    let timer = null;
+    let attempt = 0;
 
-    (async () => {
-      try {
-        acpRef.current = await openAcp(socket, {
-          onNotification: (method, params) => {
-            if (method === 'session/update' && params?.sessionId === sessionRef.current) {
-              if (params.update?.sessionUpdate === 'current_mode_update') {
-                setModes((m) => ({ ...m, current: params.update.currentModeId }));
-                return;
+    const reconnect = () => {
+      if (closed) return;
+      acpRef.current = null;
+      sessionRef.current = null;
+      setBusy(false);
+      setPermission(null);
+      setStatus({ tone: 'neutral', label: 'Reconnecting…' });
+      clearTimeout(timer);
+      timer = setTimeout(connect, reconnectDelay(attempt++));
+    };
+
+    function connect() {
+      if (closed) return;
+      let dropped = false;
+      const drop = () => { if (!dropped) { dropped = true; reconnect(); } };
+      socket = connectSocket(socketUrl(info), { onClose: drop });
+      (async () => {
+        try {
+          const acp = await openAcp(socket, {
+            onNotification: (method, params) => {
+              if (method === 'session/update' && params?.sessionId === sessionRef.current) {
+                if (params.update?.sessionUpdate === 'current_mode_update') {
+                  setModes((m) => ({ ...m, current: params.update.currentModeId }));
+                  return;
+                }
+                setMessages((current) => applyUpdate(current, params.update));
               }
-              setMessages((current) => applyUpdate(current, params.update));
+            },
+            onRequest: (method, params) => {
+              if (method !== 'session/request_permission') {
+                return Promise.reject(new Error(`${method} is not supported by this client`));
+              }
+              return new Promise((resolve) => setPermission({ params, resolve }));
+            },
+            onExit: (payload) => {
+              setBusy(false);
+              setStatus({ tone: 'error', label: `The agent stopped: ${payload?.message || payload?.error || 'no reason given'}` });
             }
-          },
-          onRequest: (method, params) => {
-            if (method !== 'session/request_permission') {
-              return Promise.reject(new Error(`${method} is not supported by this client`));
-            }
-            return new Promise((resolve) => setPermission({ params, resolve }));
-          },
-          onExit: (payload) => {
-            setBusy(false);
-            setStatus({ tone: 'error', label: `The agent stopped: ${payload?.message || payload?.error || 'no reason given'}` });
-          }
-        });
-        if (closed) return;
-        setStatus({ tone: 'neutral', label: 'Starting a session…' });
-        await startSession();
-      } catch (error) {
-        if (!closed) setStatus({ tone: 'error', label: describeError(error) });
-      }
-    })();
+          });
+          if (closed || dropped) return;
+          acpRef.current = acp;
+          setStatus({ tone: 'neutral', label: 'Starting a session…' });
+          await startSession();
+          attempt = 0;
+        } catch (error) {
+          if (closed) return;
+          // A socket that never opened or closed early reconnects; an agent
+          // error (not signed in, say) stays on screen.
+          if (dropped || /reach the Builder server|Connection closed/.test(error?.message || '')) drop();
+          else setStatus({ tone: 'error', label: describeError(error) });
+        }
+      })();
+    }
 
+    connect();
     return () => {
       closed = true;
-      socket.close();
+      clearTimeout(timer);
+      socket?.close();
     };
   }, [info, startSession]);
 
