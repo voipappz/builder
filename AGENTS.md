@@ -108,9 +108,8 @@ A component missing an event the customer needs is a change for
 | `chat/` | The chat screen (React + Vite, Node 22); `npm run build` writes `client/` |
 | `client/` | Built chat (gitignored), embedded by `core/build.rs` |
 | `scripts/e2e.sh` | Old app-path end to end (React app + `make dev`) |
-| `scripts/e2e-appz.sh`, `scripts/e2e-appz-page.cjs` | Appz end to end: Connectix only, the page checked in Chromium |
 | `contracts/` | ACP/MCP contract tests (Node) |
-| `.github/workflows/test.yml` | rust, contracts, e2e, e2e-appz |
+| `.github/workflows/test.yml` | rust (with the chat), contracts, e2e |
 | `.github/workflows/installers.yml` | Windows .exe (+ Linux .deb/AppImage after #4); release on `v*` tags |
 
 ## Commands
