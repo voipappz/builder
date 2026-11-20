@@ -10,7 +10,7 @@ phone work stands and what is next).
 
 | Part | What | State |
 |---|---|---|
-| **Builder** (`core/`, `cli/`, `desktop/`) | Rust + Tauri desktop tool: a local server whose chat page drives a coding agent (Claude Code over ACP) with read-only VoipAppz API tools, and runs a project folder described by `builder.toml` | Released up to v0.1.29. Builds the VoipAppz apps per platform (Web, Mobile, later Desktop): setup asks which; the phone project runs the Android emulator beside the chat. Its chat is in `chat/` (React + Vite). Plans: `docs/builder-product.md`, `docs/chat-in-builder-plan.md` |
+| **Builder** (`core/`, `cli/`, `desktop/`) | Rust + Tauri desktop tool: a local server whose chat page drives a coding agent (Claude Code over ACP) with read-only VoipAppz API tools, and runs a project folder described by `builder.toml` | Released up to v0.1.30. Builds the VoipAppz apps per platform (Web, Mobile, later Desktop): setup asks which; the phone project runs the Android emulator beside the chat. Its chat is in `chat/` (React + Vite). Plans: `docs/builder-product.md`, `docs/chat-in-builder-plan.md` |
 | **VoipAppz Phone** (`phone/`) | Mobile softphone in Kotlin Multiplatform (Android first, iPhone later): our own SIP-over-WebSocket code, webrtc-kmp audio, Compose Multiplatform | **Current focus.** Registration code done; the switch's 401 challenge reached; calls next. Plan: `phone/docs/plan.md` |
 | **Desktop phone** | Later, from the Rust fork `voipappz/RustSIPPhone` (outside this repo) | After the mobile app; compare a Compose desktop app first (the fork has no WebRTC audio) |
 
