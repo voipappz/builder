@@ -35,10 +35,11 @@ function statusChip(status, restarting) {
   return <Chip size="small" color="error" label="Stopped" />;
 }
 
-export default function BotPanel({ bot, secret }) {
-  // A product (Connectix) has no audio to talk to yet: status, restart and log.
-  const isProduct = bot.kind === 'product';
-  const noun = isProduct ? 'product' : 'bot';
+export default function BotPanel({ bot, secret, view }) {
+  // Only a voice bot is talked to; a product or a native app (the phone) has
+  // status, restart, actions and its log.
+  const isProduct = !view.canTalk;
+  const noun = view.noun;
   const [status, refreshStatus] = useBotStatus(bot, secret);
   const [restarting, setRestarting] = useState(false);
   const [log, setLog] = useState('');
@@ -222,7 +223,7 @@ export default function BotPanel({ bot, secret }) {
           </Box>
           {actionResult && (
             <Box component="pre" data-testid="action-result" sx={{ m: 0, p: 1, maxHeight: 200, overflow: 'auto', fontSize: '0.75rem',
-              whiteSpace: 'pre-wrap', borderRadius: 1, border: '1px solid var(--theme-border)',
+              whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', borderRadius: 1, border: '1px solid var(--theme-border)',
               color: actionResult.ok ? 'var(--theme-text-secondary)' : 'var(--color-danger)' }}>
               {`${actionResult.label}: ${actionResult.ok ? 'done' : 'failed'}\n${actionResult.text || ''}`}
             </Box>
@@ -234,10 +235,10 @@ export default function BotPanel({ bot, secret }) {
         <>
           {status?.up && !status?.ready && (
             <Typography sx={{ fontSize: '0.8rem', color: 'var(--color-danger)' }}>
-              The product is running but not ready; its log says why.
+              The {noun} is running but not ready; its log says why.
             </Typography>
           )}
-          {note && <Typography sx={{ fontSize: '0.8rem', color: 'var(--color-danger)' }}>{note}</Typography>}
+          {note && <Typography sx={{ fontSize: '0.8rem', color: 'var(--color-danger)', overflowWrap: 'anywhere', maxWidth: '100%' }}>{note}</Typography>}
         </>
       ) : (
       <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, py: 3, border: '1px solid var(--theme-border)', borderRadius: 2 }}>
@@ -264,19 +265,19 @@ export default function BotPanel({ bot, secret }) {
             The bot is not ready for calls; its log says why.
           </Typography>
         )}
-        {note && <Typography sx={{ fontSize: '0.8rem', color: 'var(--color-danger)' }}>{note}</Typography>}
+        {note && <Typography sx={{ fontSize: '0.8rem', color: 'var(--color-danger)', overflowWrap: 'anywhere', maxWidth: '100%' }}>{note}</Typography>}
       </Box>
       )}
 
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--theme-text-primary)' }}>{isProduct ? 'Product log' : 'Bot log'}</Typography>
+        <Typography sx={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--theme-text-primary)' }}>{view.logLabel}</Typography>
         <Button size="small" startIcon={<RefreshIcon />} onClick={loadLog}>Refresh</Button>
       </Box>
       <Box
         ref={logBox}
         component="pre"
         data-testid="bot-log"
-        sx={{ flex: 1, minHeight: 160, m: 0, p: 1.5, overflow: 'auto', fontSize: '0.75rem', whiteSpace: 'pre-wrap',
+        sx={{ flex: 1, minHeight: 160, m: 0, p: 1.5, overflow: 'auto', fontSize: '0.75rem', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
           border: '1px solid var(--theme-border)', borderRadius: 1, backgroundColor: 'var(--theme-bg-secondary)', color: 'var(--theme-text-secondary)' }}
       >
         {log || 'No log yet.'}

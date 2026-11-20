@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { connectSocket } from './phoenixSocket';
 import { openAcp } from './acpConnection';
 import { addUserMessage, applyUpdate, finishTurn } from './chatState';
+import { reconnectDelay } from './projectView';
 
 const AUTH_REQUIRED = -32000;
 // Builder works in its own worktree, so file edits need no prompt there;
@@ -36,9 +37,15 @@ export function useBuilderChat(info) {
   const [modes, setModes] = useState({ current: null, available: [] });
   const acpRef = useRef(null);
   const sessionRef = useRef(null);
+  // True only while a session is running: sending and New conversation wait
+  // for it, so nothing is lost or started twice during a reconnect.
+  const readyRef = useRef(false);
+  const [ready, setReady] = useState(false);
+  const markReady = (value) => { readyRef.current = value; setReady(value); };
 
   const startSession = useCallback(async () => {
     const acp = acpRef.current;
+    markReady(false);
     const session = await acp.request('session/new', { cwd: '', mcpServers: [] });
     sessionRef.current = session.sessionId;
     const available = session.modes?.availableModes || [];
@@ -50,61 +57,96 @@ export function useBuilderChat(info) {
     setModes({ current, available });
     setMessages([]);
     setStatus({ tone: 'ok', label: 'Ready' });
+    markReady(true);
   }, []);
 
+  // One connection at a time. When it drops (Builder restarted the agent,
+  // the server restarted), reconnect with a short backoff and start a new
+  // session: the old one ended with the agent.
   useEffect(() => {
     let closed = false;
-    const socket = connectSocket(socketUrl(info), {
-      onClose: () => !closed && setStatus({ tone: 'error', label: 'Disconnected from Builder. Reload to reconnect.' })
-    });
+    let socket = null;
+    let timer = null;
+    let attempt = 0;
 
-    (async () => {
-      try {
-        acpRef.current = await openAcp(socket, {
-          onNotification: (method, params) => {
-            if (method === 'session/update' && params?.sessionId === sessionRef.current) {
-              if (params.update?.sessionUpdate === 'current_mode_update') {
-                setModes((m) => ({ ...m, current: params.update.currentModeId }));
-                return;
+    const reconnect = (why) => {
+      if (closed) return;
+      acpRef.current = null;
+      sessionRef.current = null;
+      markReady(false);
+      setBusy(false);
+      setPermission((current) => { current?.resolve({ outcome: { outcome: 'cancelled' } }); return null; });
+      setStatus({ tone: why ? 'error' : 'neutral', label: why ? `${why} Reconnecting…` : 'Reconnecting…' });
+      clearTimeout(timer);
+      timer = setTimeout(connect, reconnectDelay(attempt++));
+    };
+
+    function connect() {
+      if (closed) return;
+      let dropped = false;
+      const drop = (why) => { if (!dropped) { dropped = true; reconnect(why); } };
+      const sock = connectSocket(socketUrl(info), { onClose: () => drop() });
+      socket = sock;
+      (async () => {
+        try {
+          const acp = await openAcp(socket, {
+            onNotification: (method, params) => {
+              if (method === 'session/update' && params?.sessionId === sessionRef.current) {
+                if (params.update?.sessionUpdate === 'current_mode_update') {
+                  setModes((m) => ({ ...m, current: params.update.currentModeId }));
+                  return;
+                }
+                setMessages((current) => applyUpdate(current, params.update));
               }
-              setMessages((current) => applyUpdate(current, params.update));
+            },
+            onRequest: (method, params) => {
+              if (method !== 'session/request_permission') {
+                return Promise.reject(new Error(`${method} is not supported by this client`));
+              }
+              return new Promise((resolve) => setPermission({ params, resolve }));
+            },
+            // The agent ended (Builder keeps the socket open): reconnect, which
+            // starts a new agent and session.
+            onExit: (payload) => {
+              drop(`The agent stopped: ${payload?.message || payload?.error || 'no reason given'}.`);
+              sock.close();
             }
-          },
-          onRequest: (method, params) => {
-            if (method !== 'session/request_permission') {
-              return Promise.reject(new Error(`${method} is not supported by this client`));
-            }
-            return new Promise((resolve) => setPermission({ params, resolve }));
-          },
-          onExit: (payload) => {
-            setBusy(false);
-            setStatus({ tone: 'error', label: `The agent stopped: ${payload?.message || payload?.error || 'no reason given'}` });
-          }
-        });
-        if (closed) return;
-        setStatus({ tone: 'neutral', label: 'Starting a session…' });
-        await startSession();
-      } catch (error) {
-        if (!closed) setStatus({ tone: 'error', label: describeError(error) });
-      }
-    })();
+          });
+          if (closed || dropped) return;
+          acpRef.current = acp;
+          setStatus({ tone: 'neutral', label: 'Starting a session…' });
+          await startSession();
+          attempt = 0;
+        } catch (error) {
+          if (closed) return;
+          // A socket that never opened or closed early reconnects; an agent
+          // error (not signed in, say) stays on screen.
+          if (dropped || /reach the Builder server|Connection closed/.test(error?.message || '')) drop();
+          else setStatus({ tone: 'error', label: describeError(error) });
+        }
+      })();
+    }
 
+    connect();
     return () => {
       closed = true;
-      socket.close();
+      clearTimeout(timer);
+      socket?.close();
     };
   }, [info, startSession]);
 
+  /** Sends a prompt; false (and nothing sent) until a session is ready. */
   const send = useCallback((text) => {
     const prompt = String(text || '').trim();
     const acp = acpRef.current;
-    if (!prompt || !acp || !sessionRef.current) return;
+    if (!prompt || !acp || !sessionRef.current || !readyRef.current) return false;
     setMessages((current) => addUserMessage(current, prompt));
     setBusy(true);
     acp.request('session/prompt', { sessionId: sessionRef.current, prompt: [{ type: 'text', text: prompt }] })
       .then((result) => setMessages((current) => finishTurn(current, { stopReason: result?.stopReason })))
       .catch((error) => setMessages((current) => finishTurn(current, { error: describeError(error) })))
       .finally(() => setBusy(false));
+    return true;
   }, []);
 
   const answerPermission = useCallback((optionId) => {
@@ -123,7 +165,7 @@ export function useBuilderChat(info) {
   }, [answerPermission]);
 
   const newSession = useCallback(() => {
-    if (!acpRef.current || busy) return;
+    if (!acpRef.current || busy || !readyRef.current) return;
     startSession().catch((error) => setStatus({ tone: 'error', label: describeError(error) }));
   }, [busy, startSession]);
 
@@ -134,5 +176,5 @@ export function useBuilderChat(info) {
       .catch((error) => setStatus({ tone: 'error', label: describeError(error) }));
   }, []);
 
-  return { messages, status, busy, permission, modes, setMode, send, stop, newSession, answerPermission };
+  return { messages, status, busy, ready, permission, modes, setMode, send, stop, newSession, answerPermission };
 }
