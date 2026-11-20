@@ -105,9 +105,8 @@ A component missing an event the customer needs is a change for
 | `core/build.rs` | Embeds `client/` (the chat bundle) into the binary |
 | `cli/` | `voipappz-builder` CLI (same start flow; used by the e2e scripts) |
 | `desktop/` | Tauri tray app; onboarding page `desktop/ui/index.html` |
-| `client.ref` | voipappz/app ref the chat is built from (`main`) |
-| `client/` | Built chat (gitignored), from `scripts/client.sh` |
-| `scripts/client.sh` | Clones voipappz/app at `client.ref` into `.client-app/`, runs `npm run build:builder`, copies `dist-builder` to `client/` |
+| `chat/` | The chat screen (React + Vite, Node 22); `npm run build` writes `client/` |
+| `client/` | Built chat (gitignored), embedded by `core/build.rs` |
 | `scripts/e2e.sh` | Old app-path end to end (React app + `make dev`) |
 | `scripts/e2e-appz.sh`, `scripts/e2e-appz-page.cjs` | Appz end to end: Connectix only, the page checked in Chromium |
 | `contracts/` | ACP/MCP contract tests (Node) |
@@ -118,10 +117,10 @@ A component missing an event the customer needs is a change for
 
 ```sh
 export PATH=$HOME/.cargo/bin:$PATH        # cargo is not on PATH by default
-scripts/client.sh                          # build the chat into client/ (before cargo build, for a real page)
+(cd chat && npm ci && npm test && npm run build)   # the chat into client/ (before cargo build, for a real page)
 cargo test                                 # core + cli; the desktop crate needs GTK/WebKit (CI builds it)
 cargo run -p builder-cli -- --bot-dir <appz folder> --api-url https://switch.voipappz.io --url-file <file>
-CONNECTIX_DIR=<appz folder> NODE_PATH=$PWD/.client-app/node_modules scripts/e2e-appz.sh
+CONNECTIX_DIR=<appz folder> NODE_PATH=$PWD/chat/node_modules scripts/e2e-appz.sh
 ```
 
 **Release:** bump `version` in `Cargo.toml` and `desktop/tauri.conf.json`,

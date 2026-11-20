@@ -4,7 +4,7 @@ The chat screen of [VoipAppz Builder](https://github.com/voipappz/builder).
 Builder's local server serves a small page on `http://127.0.0.1:9832` that
 loads this chat: built into `../client/` (`npm run build`, embedded by
 `core/build.rs`), or live from `npm run dev` with
-`VOIPAPPZ_BUILDER_CLIENT_DEV=1`. Moved here from voipappz/app on 2026-11-19;
+`VOIPAPPZ_BUILDER_CLIENT_DEV=http://localhost:5174`. Moved here from voipappz/app on 2026-11-19;
 `src/chat-ui/` is a copy of that repo's `packages/chat-ui` (MIT).
 
 | File | Job |
@@ -33,5 +33,5 @@ loads this chat: built into `../client/` (`npm run build`, embedded by
 
 Node 22 (`.nvmrc`). `npm ci`, then `npm test` (Vitest) and `npm run build`
 (writes `../client/`). Live: `npm run dev` (port 5174), then start Builder
-with `VOIPAPPZ_BUILDER_CLIENT_DEV=1 --client-url http://localhost:5174`.
+with `VOIPAPPZ_BUILDER_CLIENT_DEV=http://localhost:5174`.
 How the whole system fits together: [docs/how-it-works.md](../docs/how-it-works.md).

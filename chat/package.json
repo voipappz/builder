@@ -5,7 +5,7 @@
   "type": "module",
   "description": "VoipAppz Builder's chat screen (React). Built into ../client/, which Builder embeds.",
   "scripts": {
-    "dev": "vite --port 5174",
+    "dev": "vite",
     "build": "vite build && node -e \"require('fs').statSync('../client/client.js')\"",
     "test": "vitest run"
   },

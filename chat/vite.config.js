@@ -9,7 +9,9 @@ export default defineConfig({
   plugins: [react()],
   base: './',
   publicDir: false,
-  server: { cors: true },
+  // Builder's page (another origin) loads the dev server's modules, so assets
+  // such as the logo need absolute URLs on this server.
+  server: { port: 5174, strictPort: true, origin: 'http://localhost:5174', cors: true },
   build: {
     target: 'es2022',
     outDir: resolve(import.meta.dirname, '../client'),

@@ -53,10 +53,19 @@ fn embedded_client(path: &str) -> Option<&'static [u8]> {
     client_files::CLIENT_FILES.iter().find(|(p, _)| *p == path).map(|(_, bytes)| *bytes)
 }
 
-/// The built-in chat is used unless VOIPAPPZ_BUILDER_CLIENT_DEV=1 asks for
-/// the live one: `npm run dev` in chat/ (hot reload), at --client-url.
+/// The live chat (`npm run dev` in chat/, hot reload) when
+/// VOIPAPPZ_BUILDER_CLIENT_DEV names its local address, e.g.
+/// http://localhost:5174. Kept apart from --client-url, which also says
+/// where the workspace app runs.
+fn chat_dev_url() -> Option<String> {
+    let url = std::env::var("VOIPAPPZ_BUILDER_CLIENT_DEV").ok()?;
+    let url = url.trim().trim_end_matches('/');
+    (url.starts_with("http://localhost:") || url.starts_with("http://127.0.0.1:")).then(|| url.to_string())
+}
+
+/// The built-in chat, unless the live one is asked for.
 fn has_embedded_client() -> bool {
-    embedded_client("client.js").is_some() && std::env::var("VOIPAPPZ_BUILDER_CLIENT_DEV").as_deref() != Ok("1")
+    embedded_client("client.js").is_some() && chat_dev_url().is_none()
 }
 
 fn content_type(path: &str) -> &'static str {
@@ -272,8 +281,9 @@ impl BuilderConfig {
         ]
     }
 
+    /// Where the page loads the chat from when it is not built in.
     fn client_origin(&self) -> String {
-        self.client_url.trim_end_matches('/').to_string()
+        chat_dev_url().unwrap_or_else(|| self.client_url.trim_end_matches('/').to_string())
     }
 
     /// A local app run (Vite dev server) rather than a deployed client.

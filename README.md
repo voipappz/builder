@@ -55,9 +55,8 @@ and has no automatic updates.
 
    The repository is private: Git opens a browser to sign in to GitHub the
    first time. The checkout is `C:\Users\<you>\voipappz-app`.
-3. Check that `voipappz-app\package.json` and
-   `voipappz-app\src\builder-client\main.jsx` exist; onboarding looks for
-   both. Builder makes its own worktree next to the checkout,
+3. Check that `voipappz-app\package.json` exists; onboarding looks for
+   it. Builder makes its own worktree next to the checkout,
    `voipappz-app-builder`, on the branch `builder/work`.
 
 **Install**
@@ -217,5 +216,5 @@ reporting a problem. Closing that window leaves Builder running in the tray.
 
 | Repository | Role |
 |---|---|
-| `voipappz/app` | The React app Builder works on; the chat client (`src/builder-client/`) and the chat UI package (`packages/chat-ui`) |
+| `voipappz/app` | The React app Builder can work on (the chat itself is in `chat/` here, since 2026-11-19) |
 | `voipappz/api` | The VoipAppz API; its `/api/mcp` tools reach the agent read-only; the vendored contracts |
