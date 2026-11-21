@@ -29,12 +29,15 @@ setup:
 
 # While Builder runs: the emulator (started if it is not running), the app
 # installed and opened on it, and its screen streamed to Builder's pane.
+# A change to the app's code rebuilds, reinstalls and reopens it
+# (tools/dev-loop.sh), and the app's log lines show in Builder's log.
 dev: $(AVD) $(WS_SCRCPY)/.built
 	@test "$${PORT:-8000}" = 8000 || { echo "Port 8000 is taken: the emulator stream needs it (builder.toml page)."; exit 1; }
 	$(ADB) get-state >/dev/null 2>&1 || $(MAKE) emulator HEADLESS=1
 	timeout 300 sh -c 'until [ "$$($(ADB) shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = 1 ]; do sleep 2; done' \
 	  || { echo "The emulator did not boot in 5 minutes; see build/emulator.log."; exit 1; }
 	$(MAKE) install launch ADB="$(ADB)"
+	ADB="$(ADB)" tools/dev-loop.sh &
 	cd $(WS_SCRCPY)/dist && exec $(MISE) node index.js
 
 # After Builder stops `make dev`: shut down this project's emulator only.
